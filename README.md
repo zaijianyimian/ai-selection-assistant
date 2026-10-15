@@ -4,6 +4,12 @@
 
 **技术栈：Tauri 2 + Rust + Vue 3 + TypeScript + Vite + Pinia + SQLite。** SQLite 随应用编译，无需安装数据库服务。没有 Electron、Java 或 Python 应用依赖。MIT 许可。
 
+## 下载
+
+[Windows x64 v0.1.1 安装包、直接运行版与使用说明](https://github.com/zaijianyimian/ai-selection-assistant/releases/tag/v0.1.1)。安装版无需 Node.js、Rust 或 Visual Studio；需要系统 WebView2 Runtime，安装包会检查并按需安装。
+
+升级前请从托盘退出旧实例。发布附件含 SHA-256 校验值和第三方许可；安装包未签名。Ubuntu 暂按下文从源码构建。实际验证范围见 [验证记录](docs/verification.md)。
+
 ## 功能
 
 - 全局快捷键可配置；Windows 模拟复制选区、X11 优先 PRIMARY、Wayland 明确回退到手动复制。
