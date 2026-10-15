@@ -1,0 +1,39 @@
+[package]
+name = "ai-selection-assistant"
+version = "0.1.1"
+description = "Local-first AI selection translation assistant"
+edition = "2021"
+rust-version = "1.90"
+license = "MIT"
+
+[lib]
+name = "ai_selection_assistant_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-single-instance = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+tokio = { version = "1", features = ["sync", "time", "process", "io-util", "macros", "rt-multi-thread", "net"] }
+arboard = { version = "3.6", default-features = false, features = ["wayland-data-control"] }
+url = "2"
+zeroize = "1"
+rusqlite = { version = "0.40", features = ["bundled"] }
+uuid = { version = "1", features = ["v4"] }
+
+[target.'cfg(windows)'.dependencies]
+keyring = { version = "3.6", features = ["windows-native"] }
+clipboard-win = "5.4"
+windows-sys = { version = "0.61", features = ["Win32_UI_Input_KeyboardAndMouse", "Win32_System_DataExchange", "Win32_UI_WindowsAndMessaging"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3.6", features = ["sync-secret-service", "crypto-rust"] }
+
+[dev-dependencies]
+tempfile = "3"
