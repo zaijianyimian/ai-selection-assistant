@@ -182,6 +182,19 @@ impl Memory {
     pub async fn epoch(&self) -> AppResult<i64> {
         self.call(|db| meta(db, "epoch")).await
     }
+    pub async fn commit_settings(
+        &self,
+        publish: impl FnOnce() -> AppResult<()> + Send + 'static,
+    ) -> AppResult<()> {
+        self.call(move |db| {
+            let tx = db.transaction().map_err(db_error)?;
+            invalidate(&tx)?;
+            publish()?;
+            tx.commit().map_err(db_error)
+        })
+        .await
+    }
+    #[cfg(test)]
     pub async fn invalidate(&self) -> AppResult<()> {
         self.call(|db| {
             let tx = db.transaction().map_err(db_error)?;

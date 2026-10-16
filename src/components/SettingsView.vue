@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, onUnmounted, reactive, ref, watch } from 'vue'
 import { useAssistant } from '../stores/assistant'
 import { command } from '../native'
-import { errorMessage, type ConnectionTest } from '../types'
+import { errorMessage, settingsKey, type Settings, type ConnectionTest } from '../types'
 import Icon from './Icon.vue'
 
 const store = useAssistant()
@@ -12,18 +12,42 @@ const removeKey = ref(false)
 const working = ref<'save' | 'test' | null>(null)
 const message = ref('')
 const failure = ref('')
-watch(() => store.settings, config => { Object.assign(form, config) })
+const baseline = ref({ ...store.settings })
+const externalUpdate = ref<Settings | null>(null)
+const submitted = ref<Settings | null>(null)
+let externalVersion = 0
+const dirty = computed(() => settingsKey(form) !== settingsKey(baseline.value) || !!apiKey.value || removeKey.value)
+watch(() => store.settings, config => {
+  if (submitted.value && settingsKey(config) === settingsKey(submitted.value)) return
+  if (!dirty.value) {
+    Object.assign(form, config); baseline.value = { ...config }; externalUpdate.value = null
+  } else if (settingsKey(config) !== settingsKey(baseline.value)) {
+    externalVersion++
+    externalUpdate.value = { ...config }
+  }
+}, { flush: 'sync' })
+function reload() {
+  Object.assign(form, store.settings)
+  baseline.value = { ...store.settings }
+  externalUpdate.value = null; apiKey.value = ''; removeKey.value = false
+  message.value = ''; failure.value = ''
+}
 watch(() => form.rememberTerms, enabled => { if (!enabled) form.autoAnalyze = false })
 onUnmounted(() => { apiKey.value = '' })
 
 async function save() {
   working.value = 'save'; message.value = ''; failure.value = ''
+  const externalAtSubmit = externalVersion
   try {
-    await store.save({ ...form }, apiKey.value.trim() || undefined, removeKey.value)
+    submitted.value = { ...form }
+    const accepted = await store.save({ ...form }, apiKey.value.trim() || undefined, removeKey.value)
+    Object.assign(form, accepted.settings)
+    baseline.value = { ...accepted.settings }
+    if (externalAtSubmit === externalVersion || (externalUpdate.value && settingsKey(externalUpdate.value) === settingsKey(accepted.settings))) externalUpdate.value = null
     message.value = '设置已保存，立即生效。'
     removeKey.value = false
   } catch (e) { failure.value = errorMessage(e) }
-  finally { apiKey.value = ''; working.value = null }
+  finally { apiKey.value = ''; working.value = null; submitted.value = null }
 }
 async function test() {
   working.value = 'test'; message.value = ''; failure.value = ''
@@ -38,6 +62,7 @@ async function test() {
 <template>
   <section class="settings-view"><div class="page-heading"><div><div class="eyebrow">MAKE IT YOURS</div><h1>连接你的模型<span>。</span></h1><p>选择熟悉的服务，让翻译按你的方式工作。</p></div></div>
     <form class="settings-form" @submit.prevent="save">
+      <div v-if="externalUpdate" class="inline-message warning" role="status" data-testid="settings-external-update"><span>设置已在其他窗口更新，当前未保存的编辑已保留。</span><button class="button secondary" type="button" :disabled="!!working" @click="reload">重新加载已保存设置</button></div>
       <section class="settings-card"><div class="settings-card-title"><Icon name="spark" /><div><h2>模型服务</h2><p>支持 OpenAI-compatible Chat Completions API</p></div></div>
         <div class="field"><label for="base-url">Base URL</label><input id="base-url" v-model="form.baseUrl" type="url" required placeholder="https://api.example.com/v1" :disabled="!!working" autocomplete="off" spellcheck="false" /><p class="field-help">支持服务根地址、带 /v1 的路径或完整 /chat/completions 地址。HTTPS 必填；本机服务可使用 HTTP。</p></div>
         <div class="field"><label for="api-key">API Key <span class="field-status">{{ store.hasApiKey ? '已保存在系统凭据存储' : '尚未配置 · 无认证本机模型可留空' }}</span></label><input id="api-key" v-model="apiKey" type="password" :placeholder="store.hasApiKey ? '留空以保留现有 Key' : '输入服务商提供的 API Key'" autocomplete="new-password" spellcheck="false" :disabled="!!working || removeKey" /><p class="field-help">仅用于本次测试或替换密钥。保存或测试后清空输入，已保存密钥不会回传到界面。</p><label v-if="store.hasApiKey" class="checkbox-label"><input v-model="removeKey" type="checkbox" :disabled="!!working" @change="apiKey = ''" />保存时删除现有 API Key</label></div>

@@ -141,6 +141,7 @@ pub async fn start(app: tauri::AppHandle, automatic: bool) -> AppResult<()> {
     // Hold the settings lock through the snapshot so a concurrent disable invalidates this epoch.
     let state = app.state::<crate::AppState>();
     let settings = state.settings.lock().await;
+    crate::settings_commit::ensure_ready(&state.path, &state.recovering)?;
     if !settings.remember_terms || (automatic && !settings.auto_analyze) {
         return Err(AppError::new(
             "memory_disabled",
@@ -161,7 +162,10 @@ pub async fn start(app: tauri::AppHandle, automatic: bool) -> AppResult<()> {
     tauri::async_runtime::spawn(async move {
         let _guard = guard;
         let outcome = async {
+            let state = app.state::<crate::AppState>();
+            crate::settings_commit::ensure_ready(&state.path, &state.recovering)?;
             let key = crate::vault_key().await?.unwrap_or_default();
+            crate::settings_commit::ensure_ready(&state.path, &state.recovering)?;
             let profile = request(&config, &key, &snapshot).await?;
             if app.state::<Runtime>().generation.load(Ordering::Acquire) != generation {
                 return Err(AppError::new(

@@ -100,6 +100,7 @@ pub fn load(path: &Path) -> AppResult<Settings> {
     Ok(settings)
 }
 
+#[cfg(test)]
 pub fn persist(path: &Path, settings: &Settings) -> AppResult<()> {
     settings.validate()?;
     let parent = path

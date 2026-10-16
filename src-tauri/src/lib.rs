@@ -4,6 +4,7 @@ mod llm;
 mod memory;
 mod selection;
 mod settings;
+mod settings_commit;
 mod shortcut;
 mod translation;
 mod window;
@@ -21,10 +22,26 @@ use std::{
 use tauri::{Emitter, Manager, State};
 use zeroize::Zeroizing;
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RequestOptions {
+    pub target_language: String,
+    pub explain_terms: bool,
+}
+impl From<&Settings> for RequestOptions {
+    fn from(config: &Settings) -> Self {
+        Self {
+            target_language: config.target_language.clone(),
+            explain_terms: config.explain_terms,
+        }
+    }
+}
+
 #[derive(Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Job {
     pub revision: u64,
+    pub request_options: Option<RequestOptions>,
     pub status: String,
     pub original: String,
     pub source: String,
@@ -40,6 +57,7 @@ pub struct AppState {
     job: Mutex<Job>,
     busy: AtomicBool,
     shortcut_available: AtomicBool,
+    recovering: std::sync::Arc<AtomicBool>,
 }
 
 fn lock_error() -> AppError {
@@ -63,6 +81,9 @@ async fn get_settings(state: State<'_, AppState>) -> AppResult<SettingsView> {
             false
         }
     };
+    if settings_commit::ensure_ready(&state.path, &state.recovering).is_err() {
+        warnings.push(settings_commit::recovery_error().message);
+    }
     Ok(SettingsView {
         settings,
         has_api_key,
@@ -98,84 +119,46 @@ async fn save_settings(
             "当前桌面无法使用全局快捷键；请保留原快捷键设置并使用「翻译剪贴板」。",
         ));
     }
-    let key_changed = replacement.is_some() || remove_api_key;
-    // Do this before any credential/shortcut mutations, so failure leaves those untouched.
-    if config.remember_terms != current.remember_terms
-        || config.auto_analyze != current.auto_analyze
-    {
+    let old = current.clone();
+    let next = config.clone();
+    let path = state.path.clone();
+    let db = app.state::<analysis::Runtime>().db.clone();
+    let recovering = state.recovering.clone();
+    let services = std::sync::Arc::new(settings_commit::NativeServices(app.clone()));
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        tauri::async_runtime::block_on(settings_commit::commit(
+            &path,
+            &old,
+            &next,
+            replacement,
+            remove_api_key,
+            db,
+            services,
+            &recovering,
+        ))
+    })
+    .await
+    .map_err(|_| lock_error())??;
+    *current = config.clone();
+    if outcome.invalidated {
         app.state::<analysis::Runtime>()
             .generation
             .fetch_add(1, Ordering::AcqRel);
-        if let Some(db) = &app.state::<analysis::Runtime>().db {
-            db.invalidate().await?;
-        }
     }
-    let previous_key = if key_changed {
-        vault_key().await?
-    } else {
-        None
-    };
-    // Reserve the replacement first: if it conflicts, the existing shortcut stays registered.
-    if shortcut_changed {
-        shortcut::register(&app, &config.shortcut)?;
+    let mut warnings = state.warnings.lock().unwrap_or_else(|e| e.into_inner());
+    warnings.retain(|s| !s.contains("恢复") && !(shortcut_changed && s.contains("快捷键")));
+    warnings.extend(outcome.warnings);
+    if app.emit("settings-changed", ()).is_err() {
+        warnings.push("设置已提交，但窗口同步通知失败；重新打开窗口可恢复。".into());
     }
-    if key_changed {
-        let key = replacement.as_ref().map(|k| k.to_string());
-        let result = tauri::async_runtime::spawn_blocking(move || {
-            let key = key.map(Zeroizing::new);
-            settings::write_key(key.as_ref().map(|k| k.as_str()))
-        })
-        .await
-        .map_err(|_| lock_error())?;
-        if let Err(error) = result {
-            if shortcut_changed {
-                let _ = shortcut::unregister(&app, &config.shortcut);
-            }
-            return Err(error);
-        }
-    }
-    if let Err(error) = settings::persist(&state.path, &config) {
-        let rollback_error = if key_changed {
-            tauri::async_runtime::spawn_blocking(move || {
-                settings::write_key(previous_key.as_ref().map(|k| k.as_str()))
-            })
-            .await
-            .map_err(|_| lock_error())?
-        } else {
-            Ok(())
-        };
-        if shortcut_changed {
-            let _ = shortcut::unregister(&app, &config.shortcut);
-        }
-        if rollback_error.is_err() {
-            return Err(AppError::new(
-                "settings_rollback",
-                "配置保存失败，且系统凭据回滚失败。请重新保存 API Key 后再使用。",
-            ));
-        }
-        return Err(error);
-    }
-    let old_shortcut = current.shortcut.clone();
-    *current = config;
-    if shortcut_changed {
-        if let Err(error) = shortcut::unregister(&app, &old_shortcut) {
-            state
-                .warnings
-                .lock()
-                .map_err(|_| lock_error())?
-                .push(error.message);
-        } else {
-            state
-                .warnings
-                .lock()
-                .map_err(|_| lock_error())?
-                .retain(|s| !s.contains("快捷键"));
-        }
-    }
+    let warnings = warnings.clone();
     drop(current);
-    let _ = app.emit("settings-changed", ());
     analysis::changed(&app);
-    get_settings(state).await
+    Ok(SettingsView {
+        settings: config,
+        has_api_key: outcome.has_api_key,
+        warnings,
+    })
 }
 
 #[derive(Serialize)]
@@ -187,7 +170,12 @@ struct ConnectionTest {
 }
 
 #[tauri::command]
-async fn test_connection(config: Settings, api_key: Option<String>) -> AppResult<ConnectionTest> {
+async fn test_connection(
+    state: State<'_, AppState>,
+    config: Settings,
+    api_key: Option<String>,
+) -> AppResult<ConnectionTest> {
+    settings_commit::ensure_ready(&state.path, &state.recovering)?;
     config.validate()?;
     let key = match api_key {
         Some(key) => Zeroizing::new(key),
@@ -236,6 +224,7 @@ pub fn start_job(
         translation::validate_input(text)?;
     }
     let state = app.state::<AppState>();
+    settings_commit::ensure_ready(&state.path, &state.recovering)?;
     let memory_generation = app
         .state::<analysis::Runtime>()
         .generation
@@ -289,6 +278,7 @@ async fn run_job(
 ) -> AppResult<translation::Translation> {
     let state = app.state::<AppState>();
     let settings = state.settings.lock().await;
+    settings_commit::ensure_ready(&state.path, &state.recovering)?;
     let config = settings.clone();
     let db = app.state::<analysis::Runtime>().db.clone();
     let epoch = if config.remember_terms {
@@ -300,6 +290,9 @@ async fn run_job(
         None
     };
     drop(settings);
+    update_job(app, |job| {
+        job.request_options = Some(RequestOptions::from(&config))
+    });
     let job_id = uuid::Uuid::new_v4().to_string();
     let selection = match input {
         Some(text) => selection::Selection {
@@ -319,7 +312,9 @@ async fn run_job(
     if popup {
         window::show(app, "translation")?;
     }
+    settings_commit::ensure_ready(&state.path, &state.recovering)?;
     let key = vault_key().await?.unwrap_or_default();
+    settings_commit::ensure_ready(&state.path, &state.recovering)?;
     let context = if config.personalize_explanations {
         match &db {
             Some(db) => db.context(selection.text.clone()).await.unwrap_or_default(),
@@ -484,7 +479,7 @@ pub fn run() {
             let db=memory::Memory::open(app.path().app_data_dir()?.join("memory.sqlite3")).map_err(|e|warnings.push(e.message)).ok();
             app.manage(analysis::Runtime::new(db));
             app.manage(AppState {
-                settings: tokio::sync::Mutex::new(config.clone()), path,
+                settings: tokio::sync::Mutex::new(config.clone()), recovering: std::sync::Arc::new(AtomicBool::new(settings_commit::marker(&path).exists())), path,
                 warnings: Mutex::new(warnings), job: Mutex::new(Job { status: "idle".into(), ..Job::default() }),
                 busy: AtomicBool::new(false), shortcut_available: AtomicBool::new(false),
             });
@@ -516,4 +511,24 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![get_settings, save_settings, test_connection, get_job, translate_text, translate_clipboard, copy_translation, show_settings, show_popup, quit_app, platform_info, analysis::get_memory,analysis::get_analysis_status,analysis::set_term_feedback,analysis::delete_memory,analysis::select_profile,analysis::analyze_memory])
         .run(tauri::generate_context!())
         .expect("AI Selection Assistant failed to start; check native Tauri prerequisites");
+}
+
+#[cfg(test)]
+mod job_tests {
+    use super::*;
+    #[test]
+    fn request_options_are_native_owned_and_do_not_change_with_settings() {
+        let mut config = Settings::default();
+        let options = RequestOptions::from(&config);
+        config.target_language = "日本語".into();
+        config.explain_terms = false;
+        let job = Job {
+            request_options: Some(options),
+            ..Job::default()
+        };
+        let json = serde_json::to_value(&job).unwrap();
+        assert_eq!(json["requestOptions"]["targetLanguage"], "简体中文");
+        assert_eq!(json["requestOptions"]["explainTerms"], true);
+        assert!(json.get("apiKey").is_none());
+    }
 }

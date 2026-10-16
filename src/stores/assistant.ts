@@ -2,7 +2,7 @@ import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { command, desktop } from '../native'
-import { defaultSettings, errorMessage, type Job, type Settings, type SettingsView } from '../types'
+import { defaultSettings, errorMessage, settingsKey, type Job, type Settings, type SettingsView } from '../types'
 
 export const useAssistant = defineStore('assistant', () => {
   const settings = ref(defaultSettings())
@@ -14,9 +14,11 @@ export const useAssistant = defineStore('assistant', () => {
   const error = ref('')
   const pending = ref(false)
   const ready = ref(false)
-  const job = ref<Job>({ revision: 0, status: 'idle', original: '', source: '', warning: null, result: null, error: null })
+  const job = ref<Job>({ requestOptions: null, revision: 0, status: 'idle', original: '', source: '', warning: null, result: null, error: null })
   const busy = computed(() => pending.value || ['capturing', 'translating'].includes(job.value.status))
   let listeners: UnlistenFn[] = []
+  let settingsVersion = 0
+  let settingsLoad = 0
 
   function acceptJob(next: Job) {
     if (next.revision < job.value.revision) return
@@ -24,11 +26,16 @@ export const useAssistant = defineStore('assistant', () => {
     if (next.original) input.value = next.original
   }
   function acceptSettings(view: SettingsView) {
+    settingsVersion++
     settings.value = view.settings
     hasApiKey.value = view.hasApiKey
     warnings.value = view.warnings
   }
-  async function loadSettings() { acceptSettings(await command<SettingsView>('get_settings')) }
+  async function loadSettings() {
+    const revision = ++settingsLoad
+    const view = await command<SettingsView>('get_settings')
+    if (revision === settingsLoad) acceptSettings(view)
+  }
 
   async function initialize() {
     if (!desktop) { ready.value = true; return }
@@ -56,7 +63,15 @@ export const useAssistant = defineStore('assistant', () => {
   }
 
   async function save(config: Settings, apiKey?: string, removeApiKey = false) {
-    acceptSettings(await command<SettingsView>('save_settings', { config, apiKey: apiKey ?? null, removeApiKey }))
+    const version = settingsVersion
+    const before = settingsKey(settings.value)
+    const view = await command<SettingsView>('save_settings', { config, apiKey: apiKey ?? null, removeApiKey })
+    // A later external settings event must not be undone by an earlier save response.
+    if ((version === settingsVersion && settingsKey(settings.value) === before) || settingsKey(settings.value) === settingsKey(config) || settingsKey(settings.value) === settingsKey(view.settings)) {
+      settingsLoad++
+      acceptSettings(view)
+    }
+    return view
   }
   function dispose() { listeners.forEach(unlisten => unlisten()); listeners = [] }
   return { settings, hasApiKey, warnings, input, page, platform, error, ready, job, busy, initialize, dispose, translate, save, acceptJob }

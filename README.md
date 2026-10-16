@@ -8,7 +8,9 @@
 
 [Windows x64 v0.1.1 安装包、直接运行版与使用说明](https://github.com/zaijianyimian/ai-selection-assistant/releases/tag/v0.1.1)。安装版无需 Node.js、Rust 或 Visual Studio；需要系统 WebView2 Runtime，安装包会检查并按需安装。
 
-升级前请从托盘退出旧实例。发布附件含 SHA-256 校验值和第三方许可；安装包未签名。Ubuntu 暂按下文从源码构建。实际验证范围见 [验证记录](docs/verification.md)。
+[Linux amd64 v0.1.2 DEB 与 SHA-256](https://github.com/zaijianyimian/ai-selection-assistant/releases/tag/v0.1.2)。本次是 Linux 修复版；Windows 二进制仍使用上面的 v0.1.1。DEB 基于 Ubuntu 26.04 构建，最低 libc6 2.39，并要求包内声明的 WebKitGTK / GTK 等依赖；不适用于 Ubuntu 22.04 的预编译安装。
+
+升级前请从托盘退出旧实例。发布附件含 SHA-256 校验值和第三方许可；安装包未签名。Linux 可安装 DEB，或按下文从源码构建。实际验证范围见 [验证记录](docs/verification.md)。
 
 ## 功能
 
@@ -78,11 +80,11 @@ bash scripts/build-windows-wsl.sh
 
 ## Ubuntu 开发与构建
 
-适用于 Ubuntu 22.04 / 24.04 及具有 WebKitGTK 4.1 的后续桌面版本。需要完整桌面会话；纯 SSH / 无图形环境不能显示应用。
+以下是源码构建指导，适用于 Ubuntu 22.04 / 24.04 及具有 WebKitGTK 4.1 的后续桌面版本。预编译 DEB 的支持范围由该产物的构建环境、control 依赖与验证记录决定，不能据此推断。需要完整桌面会话；纯 SSH / 无图形环境不能显示应用。
 
 ```bash
 sudo apt update
-sudo apt install -y build-essential pkg-config curl wget file \
+sudo apt install -y build-essential pkg-config curl wget file dpkg-dev binutils python3 \
   libwebkit2gtk-4.1-dev libxdo-dev libssl-dev \
   libayatana-appindicator3-dev librsvg2-dev libdbus-1-dev \
   gnome-keyring dbus-user-session wl-clipboard fonts-noto-cjk fonts-noto-color-emoji
@@ -103,9 +105,17 @@ npm run tauri dev
 构建安装包：
 
 ```bash
-npm run tauri build -- --bundles deb
+bash scripts/build-linux-deb.sh
 # 或 AppImage（可能还需发行版提供的 FUSE 运行库）
 npm run tauri build -- --bundles appimage
+```
+
+DEB 脚本从最终 ELF 和 dpkg-shlibdeps 元数据生成版本依赖，并对成品再次验包；缺少工具/元数据会失败。`python3`、`dpkg-dev`、`binutils` 只是构建和验证工具，不是桌面应用运行依赖。单独验包：
+
+```bash
+bash scripts/verify-linux-deb.sh '/path/to/AI Selection Assistant_0.1.2_amd64.deb'
+# 安装（apt 自动解析依赖）
+sudo apt install ./ai-selection-assistant_0.1.2_amd64.deb
 ```
 
 输出位于 `src-tauri/target/release/bundle/`。同一份 `node_modules` 不宜跨 Windows / WSL 共用；正常开发应在各自系统的独立工作目录执行 `npm ci`。在 WSL 中建议把项目放在 Linux 文件系统以改善编译性能；显示窗口需要 WSLg。

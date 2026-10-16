@@ -18,7 +18,9 @@ export interface Settings {
 export interface AppError { code: string; message: string }
 export interface Term { original: string; translation: string; domain: string; explanation: string; example: string | null; senseSummary?: string; memoryId?: number | null }
 export interface Translation { translation: string; sourceLanguage: string; terms: Term[]; compatibilityFallback: boolean }
+export interface RequestOptions { targetLanguage: Settings['targetLanguage']; explainTerms: boolean }
 export interface Job {
+  requestOptions: RequestOptions | null
   revision: number
   status: 'idle' | 'capturing' | 'translating' | 'success' | 'error'
   original: string
@@ -48,4 +50,10 @@ export function errorMessage(error: unknown): string {
   if (typeof error === 'object' && error !== null && 'message' in error && typeof error.message === 'string') return error.message
   if (typeof error === 'string') return error
   return '操作失败，请稍后重试。'
+}
+
+// Canonical non-secret values; property order and backend whitespace normalization do not create conflicts.
+export function settingsKey(value: Settings): string {
+  const normalized = { ...value, baseUrl: value.baseUrl.trim(), model: value.model.trim(), shortcut: value.shortcut.trim() }
+  return JSON.stringify((Object.keys(defaultSettings()) as (keyof Settings)[]).map(key => normalized[key]))
 }

@@ -13,7 +13,7 @@ describe('translation result presentation', () => {
   it('renders model content as escaped text and shows contextual terms', () => {
     const store = useAssistant()
     store.job = {
-      revision: 1, status: 'success', original: 'JVM', source: 'manual', warning: null, error: null,
+      requestOptions: { targetLanguage: '简体中文', explainTerms: true }, revision: 1, status: 'success', original: 'JVM', source: 'manual', warning: null, error: null,
       result: { translation: '<script>alert(1)</script>', sourceLanguage: 'English', compatibilityFallback: false,
         terms: [{ original: 'JVM', translation: 'Java 虚拟机', domain: 'JVM', explanation: '执行 Java 字节码的运行环境。', example: null }] },
     }
@@ -34,6 +34,43 @@ describe('translation result presentation', () => {
     await nextTick()
     expect(view.find('[role="alert"]').text()).toContain('请检查 API Key')
     expect(view.find('[role="status"]').exists()).toBe(false)
+    view.unmount()
+  })
+})
+
+describe('request display options', () => {
+  beforeEach(() => setActivePinia(createPinia()))
+  it.each([false, true])('keeps completed result language and terms in popup=%s', async popup => {
+    const store = useAssistant()
+    store.job = { requestOptions: { targetLanguage: '简体中文', explainTerms: true }, revision: 9, status: 'success', original: 'Agent', source: 'manual', warning: null, error: null,
+      result: { translation: '智能体', sourceLanguage: 'English', compatibilityFallback: false, terms: [{ original: 'Agent', translation: '智能体', domain: 'Agent', explanation: '自主系统', example: null }] } }
+    const view = mount(TranslationView, { props: { popup } })
+    store.settings.targetLanguage = '日本語'; store.settings.explainTerms = false
+    await nextTick()
+    expect(view.find('.language-tag').text()).toBe('简体中文')
+    expect(view.find('.translated-text').text()).toBe('智能体')
+    expect(view.find('.term-card').exists()).toBe(true)
+    expect(view.find('.section-heading').text()).not.toContain('术语解释已关闭')
+    view.unmount()
+  })
+  it('retains options when defaults change during translation', async () => {
+    const store = useAssistant()
+    store.job.requestOptions = { targetLanguage: 'English', explainTerms: false }
+    store.job.status = 'translating'
+    const view = mount(TranslationView, { props: { popup: false } })
+    store.settings.targetLanguage = '日本語'; store.settings.explainTerms = true
+    await nextTick()
+    store.job.status = 'success'; store.job.result = { translation: 'Hello', sourceLanguage: '中文', terms: [], compatibilityFallback: false }
+    await nextTick()
+    expect(view.find('.language-tag').text()).toBe('English')
+    expect(view.find('.section-heading').text()).toContain('术语解释已关闭')
+    view.unmount()
+  })
+  it('uses current defaults only when there is no result snapshot', async () => {
+    const store = useAssistant()
+    store.settings.targetLanguage = '日本語'
+    const view = mount(TranslationView, { props: { popup: false } })
+    expect(view.find('.language-tag').text()).toBe('日本語')
     view.unmount()
   })
 })

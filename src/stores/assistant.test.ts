@@ -10,14 +10,14 @@ vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn(async (name: string, han
   return () => native.handlers.delete(name)
 }) }))
 
-const idle = (): Job => ({ revision: 0, status: 'idle', original: '', source: '', warning: null, result: null, error: null })
+const idle = (): Job => ({ requestOptions: null, revision: 0, status: 'idle', original: '', source: '', warning: null, result: null, error: null })
 
 describe('native job synchronization', () => {
   beforeEach(() => { setActivePinia(createPinia()); native.command.mockReset(); native.handlers.clear() })
 
   it('keeps a newer result when an older snapshot arrives after an event', async () => {
     const store = useAssistant()
-    const completed: Job = { ...idle(), revision: 5, status: 'success', original: 'source', result: { translation: '译文', sourceLanguage: 'English', terms: [], compatibilityFallback: false } }
+    const completed: Job = { ...idle(), requestOptions: { targetLanguage: 'English', explainTerms: false }, revision: 5, status: 'success', original: 'source', result: { translation: '译文', sourceLanguage: 'English', terms: [], compatibilityFallback: false } }
     native.command.mockImplementation(async (name: string) => {
       if (name === 'get_settings') return { settings: defaultSettings(), hasApiKey: true, warnings: [] }
       if (name === 'get_job') {
@@ -30,6 +30,7 @@ describe('native job synchronization', () => {
     expect(store.job.status).toBe('success')
     expect(store.job.result?.translation).toBe('译文')
     expect(store.input).toBe('source')
+    expect(store.job.requestOptions).toEqual({ targetLanguage: 'English', explainTerms: false })
     store.dispose()
     expect(native.handlers.size).toBe(0)
   })
@@ -54,12 +55,13 @@ describe('native job synchronization', () => {
     const store = useAssistant()
     native.command.mockImplementation(async (name: string) => {
       if (name === 'get_settings') return { settings: defaultSettings(), hasApiKey: false, warnings: ['快捷键冲突'] }
-      if (name === 'get_job') return { ...idle(), revision: 8, status: 'capturing' }
+      if (name === 'get_job') return { ...idle(), requestOptions: { targetLanguage: '日本語', explainTerms: true }, revision: 8, status: 'capturing' }
       return 'Wayland'
     })
     await store.initialize()
     expect(store.busy).toBe(true)
     expect(store.warnings).toEqual(['快捷键冲突'])
     expect(store.ready).toBe(true)
+    expect(store.job.requestOptions?.targetLanguage).toBe('日本語')
   })
 })

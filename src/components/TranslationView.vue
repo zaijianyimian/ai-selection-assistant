@@ -10,6 +10,8 @@ defineProps<{ popup: boolean }>()
 const store = useAssistant()
 const copied = ref(false)
 const copyError = ref('')
+const targetLanguage = computed(() => store.job.requestOptions?.targetLanguage ?? (store.job.result ? '目标语言未知' : store.settings.targetLanguage))
+const explainTerms = computed(() => store.job.requestOptions?.explainTerms ?? (store.job.result ? !!store.job.result.terms.length : store.settings.explainTerms))
 const count = computed(() => [...store.input].length)
 const sourceLabels: Record<string, string> = { manual: '手动输入', 'windows-selection': 'Windows 选区', 'x11-primary': 'X11 选区', 'wayland-clipboard': 'Wayland 剪贴板', clipboard: '剪贴板' }
 async function copy() {
@@ -37,7 +39,7 @@ async function copy() {
       </section>
 
       <section class="text-panel output-panel" aria-live="polite" aria-atomic="false">
-        <div class="panel-heading"><span><span class="mini-label accent">02</span>译文</span><div class="translation-tools"><span class="language-tag">{{ store.settings.targetLanguage }}</span><button class="icon-button" :aria-label="copied ? '已复制' : '复制译文'" :title="copied ? '已复制' : '复制译文'" :disabled="!store.job.result || store.busy" @click="copy"><Icon :name="copied ? 'check' : 'copy'" :size="16" /></button></div></div>
+        <div class="panel-heading"><span><span class="mini-label accent">02</span>译文</span><div class="translation-tools"><span class="language-tag">{{ targetLanguage }}</span><button class="icon-button" :aria-label="copied ? '已复制' : '复制译文'" :title="copied ? '已复制' : '复制译文'" :disabled="!store.job.result || store.busy" @click="copy"><Icon :name="copied ? 'check' : 'copy'" :size="16" /></button></div></div>
         <div v-if="store.busy" class="result-loading" role="status"><div class="loading-symbol"><Icon name="spark" :size="26" /></div><strong>{{ store.job.status === 'capturing' ? '正在读取文字…' : '正在理解这段文字…' }}</strong><p>翻译与术语解释将在同一次回复中返回</p><div class="skeleton-lines"><i></i><i></i><i></i></div></div>
         <template v-else-if="store.job.result"><div class="translated-text">{{ store.job.result.translation }}</div><div class="result-meta"><span class="status-dot"></span>翻译完成<span v-if="store.job.source"> · {{ sourceLabels[store.job.source] || store.job.source }}</span></div></template>
         <div v-else-if="store.job.error" class="result-error" role="alert"><Icon name="info" :size="28" /><strong>这次翻译没有完成</strong><p>{{ store.job.error.message }}</p><button class="button secondary" :disabled="!store.input.trim()" @click="store.translate()">重试输入文字</button></div>
@@ -49,7 +51,7 @@ async function copy() {
     <div v-if="store.job.warning" class="inline-message warning"><Icon name="info" :size="16" />{{ store.job.warning }}</div>
     <div v-if="store.job.result?.compatibilityFallback" class="inline-message warning">已按服务返回的兼容要求调整输出格式或 Temperature 参数，翻译成功。可在设置中选择「JSON 模式」或「提示词 JSON」减少后续格式探测。</div>
 
-    <section class="terms-section"><div class="section-heading"><div><Icon name="book" :size="18" /><h2>术语笔记</h2><span v-if="store.job.result" class="count-badge">{{ store.job.result.terms.length }}</span></div><span class="muted text-small">{{ store.settings.explainTerms ? '在语境中，理解专业词汇' : '术语解释已关闭' }}</span></div>
+    <section class="terms-section"><div class="section-heading"><div><Icon name="book" :size="18" /><h2>术语笔记</h2><span v-if="store.job.result" class="count-badge">{{ store.job.result.terms.length }}</span></div><span class="muted text-small">{{ explainTerms ? '在语境中，理解专业词汇' : '术语解释已关闭' }}</span></div>
       <div v-if="store.job.result?.terms.length" class="term-grid"><TermCard v-for="(term, index) in store.job.result.terms" :key="`${term.original}-${index}`" :term="term" /></div>
       <div v-else class="terms-empty"><Icon name="spark" :size="19" /><span>{{ store.job.result ? '这段文字中没有需要解释的专业术语。' : '翻译后，值得了解的专业术语会收录在这里。' }}</span><span v-if="!popup" class="domain-hint">Java · AI / LLM · 数据库 · 软件工程</span></div>
     </section>
