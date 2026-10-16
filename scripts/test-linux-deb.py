@@ -30,6 +30,12 @@ with tempfile.TemporaryDirectory(prefix='asa-negative-deb-') as directory:
     result=subprocess.run([sys.executable,str(script),'config',str(package)],env={**os.environ,'PATH':'/nonexistent'},capture_output=True,text=True)
     assert result.returncode!=0 and 'missing' in result.stderr
     checks.append('missing tool fails closed')
+    for size in [module.MAX_DEB_BYTES, module.MAX_DEB_BYTES+1]:
+        oversized=base/f'oversized-{size}.deb'
+        with oversized.open('wb') as stream: stream.truncate(size)
+        result=subprocess.run([sys.executable,str(script),'verify',str(oversized)],capture_output=True,text=True)
+        assert result.returncode!=0 and 'size budget exceeded' in result.stderr
+        checks.append(f'{size} byte package is rejected')
     fake=base/'fake';fake.mkdir()
     for tool in ['dpkg-deb','dpkg','readelf']:(fake/tool).symlink_to(shutil.which(tool))
     shim=fake/'dpkg-shlibdeps';shim.write_text('#!/bin/sh\necho "shlibs:Depends="\n');shim.chmod(0o755)

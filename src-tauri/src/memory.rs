@@ -137,7 +137,8 @@ fn init(db: &Connection) -> AppResult<()> {
         UNIQUE(job,term_id,kind));
       CREATE INDEX IF NOT EXISTS events_term ON events(term_id,id);
       CREATE TABLE IF NOT EXISTS profiles(id INTEGER PRIMARY KEY AUTOINCREMENT,at INTEGER NOT NULL,content TEXT NOT NULL);
-      PRAGMA user_version=1;").map_err(db_error)
+      PRAGMA user_version=1;").map_err(db_error)?;
+    crate::search::init(db)
 }
 fn read_term(db: &Connection, id: i64, cursor: i64) -> AppResult<StoredTerm> {
     db.query_row("SELECT t.id,t.original,t.translation,t.domain,t.sense,t.language,
@@ -226,18 +227,57 @@ impl Memory {
         }).await
     }
     pub async fn view(&self, query: String, offset: u32) -> AppResult<MemoryView> {
+        self.view_with_mode(query, offset, "keyword".into()).await
+    }
+    pub async fn view_with_mode(
+        &self,
+        query: String,
+        offset: u32,
+        mode: String,
+    ) -> AppResult<MemoryView> {
         self.call(move |db| {
-            let pattern=format!("%{}%",query.chars().take(200).collect::<String>());
-            let total=db.query_row("SELECT COUNT(*) FROM terms WHERE original LIKE ?1 OR translation LIKE ?1 OR domain LIKE ?1",[&pattern],|r|r.get(0)).map_err(db_error)?;
-            let ids:Vec<i64>=db.prepare("SELECT id FROM terms WHERE original LIKE ?1 OR translation LIKE ?1 OR domain LIKE ?1 ORDER BY id DESC LIMIT 30 OFFSET ?2").map_err(db_error)?
-                .query_map(params![pattern,offset],|r|r.get(0)).map_err(db_error)?.collect::<Result<_,_>>().map_err(db_error)?;
-            let terms=ids.into_iter().map(|id|read_term(db,id,i64::MAX)).collect::<AppResult<_>>()?;
-            let versions=db.prepare("SELECT id,at,content FROM profiles ORDER BY id DESC LIMIT 10").map_err(db_error)?
-                .query_map([],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,String>(2)?))).map_err(db_error)?
-                .map(|row|{let(id,created_at,content)=row.map_err(db_error)?;Ok(Version{id,created_at,profile:serde_json::from_str(&content).map_err(db_error)?})}).collect::<AppResult<_>>()?;
-            let pending=db.query_row("SELECT COUNT(*) FROM events WHERE id>?",[meta(db,"cursor")?],|r|r.get(0)).map_err(db_error)?;
-            Ok(MemoryView{terms,total,pending,versions,active_version:meta(db,"active")?,last_auto_attempt:meta(db,"last_auto")?})
-        }).await
+            let (ids, total) = crate::search::page(db, &query, &mode, offset)?;
+            let terms = ids
+                .into_iter()
+                .map(|id| read_term(db, id, i64::MAX))
+                .collect::<AppResult<_>>()?;
+            let versions = db
+                .prepare("SELECT id,at,content FROM profiles ORDER BY id DESC LIMIT 10")
+                .map_err(db_error)?
+                .query_map([], |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, i64>(1)?,
+                        r.get::<_, String>(2)?,
+                    ))
+                })
+                .map_err(db_error)?
+                .map(|row| {
+                    let (id, created_at, content) = row.map_err(db_error)?;
+                    Ok(Version {
+                        id,
+                        created_at,
+                        profile: serde_json::from_str(&content).map_err(db_error)?,
+                    })
+                })
+                .collect::<AppResult<_>>()?;
+            let pending = db
+                .query_row(
+                    "SELECT COUNT(*) FROM events WHERE id>?",
+                    [meta(db, "cursor")?],
+                    |r| r.get(0),
+                )
+                .map_err(db_error)?;
+            Ok(MemoryView {
+                terms,
+                total,
+                pending,
+                versions,
+                active_version: meta(db, "active")?,
+                last_auto_attempt: meta(db, "last_auto")?,
+            })
+        })
+        .await
     }
     pub async fn feedback(&self, id: i64, value: String) -> AppResult<()> {
         if !["unknown", "learning", "known"].contains(&value.as_str()) {

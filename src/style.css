@@ -171,3 +171,10 @@ input[type='checkbox'] { accent-color: var(--accent); }
 .memory-preferences { margin-top: 24px; }.pagination { justify-content: center; margin-top: 22px; }
 .term-feedback { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); font-size: 10px; }
 .term-feedback [aria-pressed='true'] { color: var(--accent); font-weight: 600; }
+
+/* Keep compact popup content scrollable without moving its controls outside the viewport. */
+.popup-shell { height: 100vh; min-height: 0; overflow: hidden; }
+.popup-shell .main-shell { height: 100vh; min-height: 0; }
+.popup-shell main { min-height: 0; overflow: auto; }
+.popup-shell .topbar, .popup-shell .app-footer { flex-shrink: 0; }
+.placement-hint { margin-bottom: 12px; }

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Real Tauri IPC + WebKit UI test. Run ONLY under isolated Xvfb and dbus-run-session.
-Needs tauri-driver, WebKitWebDriver and gnome-keyring-daemon. Never uses user credentials.
+Needs tauri-driver, WebKitWebDriver, xclip, Openbox and gnome-keyring-daemon. Never uses user credentials.
 """
-import argparse, base64, ctypes, http.server, json, os, signal, subprocess, tempfile, threading, time, urllib.request
+import argparse, base64, ctypes, http.server, json, os, re, signal, subprocess, tempfile, threading, time, urllib.request
 from pathlib import Path
 
 parser=argparse.ArgumentParser()
@@ -10,6 +10,7 @@ parser.add_argument('--binary',required=True)
 parser.add_argument('--driver',required=True)
 parser.add_argument('--native-driver',required=True)
 parser.add_argument('--output',required=True)
+parser.add_argument('--xclip',required=True)
 a=parser.parse_args()
 assert not os.environ.get('WAYLAND_DISPLAY'), 'Use an isolated Xvfb display'
 assert os.environ.get('AI_SELECTION_E2E_ISOLATED')=='1', 'Explicit isolation is required'
@@ -25,7 +26,7 @@ class Provider(http.server.BaseHTTPRequestHandler):
             content={'topics':[{'domain':'Agent','evidenceIds':[1]}]}
         else:
             if 'slow' in body['messages'][1]['content']: delay.wait(10)
-            content={'translation':'智能体完成任务。','sourceLanguage':'English','terms':[{'original':'Agent','translation':'智能体','domain':'Agent','explanation':'自主执行任务的系统','senseSummary':'自主执行任务的系统','example':None}]}
+            content={'translation':('智能体完成任务。'*50 if 'slow' in body['messages'][1]['content'] else '智能体完成任务。'),'sourceLanguage':'English','terms':[{'original':'Agent','translation':'智能体','domain':'Agent','explanation':'自主执行任务的系统','senseSummary':'自主执行任务的系统','example':None}]}
         data=json.dumps({'choices':[{'message':{'content':json.dumps(content)},'finish_reason':'stop'}]}).encode()
         self.send_response(200); self.send_header('Content-Type','application/json'); self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
     def log_message(self,*args): pass
@@ -51,7 +52,7 @@ def http(method,path,data=None):
     if isinstance(value,dict) and isinstance(value.get('error'),str): raise RuntimeError(str(value))
     return value
 
-session=None;driver=None;keyring=None
+session=None;driver=None;keyring=None;selection_owner=None
 with tempfile.TemporaryDirectory(prefix='asa-native-e2e-') as directory:
     base=Path(directory)
     env=os.environ.copy()
@@ -68,6 +69,8 @@ with tempfile.TemporaryDirectory(prefix='asa-native-e2e-') as directory:
             if '=' in line:
                 k,v=line.split('=',1)
                 if k.startswith('GNOME_KEYRING'):env[k]=v
+        wm=subprocess.Popen(['openbox'],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+        time.sleep(.5)
         with (out/'driver.log').open('w') as log:
             driver=subprocess.Popen([str(Path(a.driver).resolve()),'--native-driver',str(Path(a.native_driver).resolve())],env=env,stdout=log,stderr=log,start_new_session=True)
             wait(lambda:http('GET','/status'))
@@ -92,6 +95,51 @@ with tempfile.TemporaryDirectory(prefix='asa-native-e2e-') as directory:
             wait(lambda:not invoke('get_analysis_status')['running'])
             memory=invoke('get_memory',{'query':'','offset':0})
             check('real translation and profile persisted',len(memory['versions'])==1 and memory['total']==1)
+            count=len(requests)
+            check('keyword IPC spans name and standalone sense',invoke('get_memory',{'query':'Agent 自主','mode':'keyword','offset':0})['total']==1)
+            check('fuzzy IPC retrieves misspelling',invoke('get_memory',{'query':'Agnt','mode':'fuzzy','offset':0})['total']==1)
+            check('invalid search mode is recoverable','error' in invoke('get_memory',{'query':'Agent','mode':'invalid','offset':0},True))
+            js("Array.from(document.querySelectorAll('nav button')).find(e=>e.textContent.includes('术语记忆')).click()")
+            wait(lambda:js("return !!document.querySelector('#term-search')"))
+            js("const e=document.querySelector('#term-search');e.value='Agnt';e.dispatchEvent(new Event('input',{bubbles:true}));const m=document.querySelector('#term-search-mode');m.value='fuzzy';m.dispatchEvent(new Event('change',{bubbles:true}));")
+            wait(lambda:js("return document.querySelectorAll('.term-card').length")==1)
+            check('native search UI retains feedback and delete',js("return !!document.querySelector('.term-card select') && document.querySelector('.term-card').textContent.includes('删除')"))
+            check('search does not call model provider',len(requests)==count)
+            (out/'memory-search.png').write_bytes(base64.b64decode(http('GET',prefix+'/screenshot')))
+            # Own PRIMARY and send a real global shortcut only inside this isolated Xvfb.
+            selection_owner=subprocess.Popen([str(Path(a.xclip).resolve()),'-selection','primary','-in','-quiet'],stdin=subprocess.PIPE,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,env=env)
+            selection_owner.stdin.write(b'An Agent completes a task.');selection_owner.stdin.close()
+            time.sleep(.2)
+            x=ctypes.CDLL('libX11.so.6');x.XOpenDisplay.restype=ctypes.c_void_p
+            x.XDefaultRootWindow.argtypes=[ctypes.c_void_p];x.XDefaultRootWindow.restype=ctypes.c_ulong
+            x.XKeysymToKeycode.argtypes=[ctypes.c_void_p,ctypes.c_ulong];x.XKeysymToKeycode.restype=ctypes.c_uint
+            x.XSync.argtypes=[ctypes.c_void_p,ctypes.c_int];x.XCloseDisplay.argtypes=[ctypes.c_void_p]
+            x.XWarpPointer.argtypes=[ctypes.c_void_p,ctypes.c_ulong,ctypes.c_ulong,ctypes.c_int,ctypes.c_int,ctypes.c_uint,ctypes.c_uint,ctypes.c_int,ctypes.c_int]
+            x.XDisplayWidth.argtypes=[ctypes.c_void_p,ctypes.c_int];x.XDisplayHeight.argtypes=[ctypes.c_void_p,ctypes.c_int]
+            xt=ctypes.CDLL('libXtst.so.6');xt.XTestFakeKeyEvent.argtypes=[ctypes.c_void_p,ctypes.c_uint,ctypes.c_int,ctypes.c_ulong]
+            display=x.XOpenDisplay(None);root=x.XDefaultRootWindow(display)
+            width=x.XDisplayWidth(display,0);height=x.XDisplayHeight(display,0)
+            def shortcut_at(px,py):
+                previous=invoke('get_job')['revision']
+                x.XWarpPointer(display,0,root,0,0,0,0,px,py);x.XSync(display,0)
+                codes=[x.XKeysymToKeycode(display,k) for k in (0xffe3,0xffe1,ord('q'))]
+                for code in codes:xt.XTestFakeKeyEvent(display,code,1,0)
+                for code in reversed(codes):xt.XTestFakeKeyEvent(display,code,0,0)
+                x.XSync(display,0)
+                wait(lambda:invoke('get_job')['revision']>previous and invoke('get_job')['status']=='success')
+                tree=subprocess.check_output(['xwininfo','-root','-tree'],env=env,text=True)
+                (out/f'windows-{px}-{py}.txt').write_text(tree)
+                match=re.search(r'"划词翻译[^"\n]*".*?(\d+)x(\d+)[+-]\d+[+-]\d+\s+([+-]\d+)([+-]\d+)',tree)
+                assert match,tree
+                return tuple(map(int,match.groups()))
+            w,h,px,py=shortcut_at(500,300)
+            print('PLACEMENT',w,h,px,py,'WARNING',invoke('get_job')['warning'],flush=True)
+            check('real X11 shortcut captures PRIMARY before focus',invoke('get_job')['original']=='An Agent completes a task.' and invoke('get_job')['source']=='x11-primary')
+            check('real X11 popup opens beside pointer',abs(px-512)<=3 and abs(py-316)<=30 and w==440 and h==600)
+            w,h,px,py=shortcut_at(width-10,height-10)
+            check('real X11 edge popup remains in work area',px>=8 and py>=8 and px+w<=width-8 and py+h<=height-8 and px<width-10 and py<height-10)
+            x.XCloseDisplay(display)
+            memory=invoke('get_memory',{'query':'','offset':0})
             # Reserve Alt+Shift+T in another X11 client so the actual native register fails.
             x=ctypes.CDLL('libX11.so.6');x.XOpenDisplay.restype=ctypes.c_void_p
             x.XDefaultRootWindow.argtypes=[ctypes.c_void_p];x.XDefaultRootWindow.restype=ctypes.c_ulong
@@ -118,7 +166,7 @@ with tempfile.TemporaryDirectory(prefix='asa-native-e2e-') as directory:
             check('native UI reloads saved configuration',True)
             # Run a real asynchronous request, then update settings before releasing the local provider.
             invoke('translate_text',{'text':'A slow Agent completes a task.'})
-            wait(lambda:len(requests)>=3 and 'slow' in requests[-1]['messages'][1]['content'])
+            wait(lambda:'slow' in requests[-1]['messages'][1]['content'])
             invoke('save_settings',{'config':{**external,'targetLanguage':'日本語','explainTerms':False},'apiKey':None,'removeApiKey':False})
             delay.set();wait(lambda:invoke('get_job')['status']=='success')
             check('in-flight request retains native options',invoke('get_job')['requestOptions']=={'targetLanguage':'简体中文','explainTerms':True})
@@ -135,6 +183,12 @@ with tempfile.TemporaryDirectory(prefix='asa-native-e2e-') as directory:
                     popup_found=True
                     break
             check('popup restores same result and language',popup_found)
+            check('compact popup content scrolls with usable controls',js("const m=document.querySelector('main');m.scrollTop=m.scrollHeight;return m.scrollHeight>m.clientHeight && m.scrollTop>0 && !!document.querySelector('textarea') && !!document.querySelector('[aria-label=\"复制译文\"]') && !!document.querySelector('.term-card')"))
+            (out/'native-result-scrolled.png').write_bytes(base64.b64decode(http('GET',prefix+'/screenshot')))
+            js("document.querySelector('[aria-label=\"复制译文\"]').click()")
+            wait(lambda:js("return !!document.querySelector('[aria-label=\"已复制\"]')"))
+            check('compact popup copy writes real X11 clipboard',subprocess.check_output([str(Path(a.xclip).resolve()),'-selection','clipboard','-out'],env=env,text=True)=='智能体完成任务。'*50)
+            js("document.querySelector('main').scrollTop=0")
             # Recovery gate uses only a non-secret file; it blocks all three model entry paths.
             config_path.with_suffix('.recovery').write_text('settings recovery required\n')
             count=len(requests)
@@ -144,6 +198,9 @@ with tempfile.TemporaryDirectory(prefix='asa-native-e2e-') as directory:
             invoke('save_settings',{'config':external,'apiKey':'fixture-provider-key','removeApiKey':False})
             check('successful explicit recovery clears marker',not config_path.with_suffix('.recovery').exists())
             check('recovery preserves existing terms',invoke('get_memory',{'query':'','offset':0})['total']==1)
+            invoke('save_settings',{'config':external,'apiKey':None,'removeApiKey':True})
+            count=len(requests)
+            check('both search modes work without an API key',not invoke('get_settings')['hasApiKey'] and all(invoke('get_memory',{'query':q,'mode':m,'offset':0})['total']==1 for q,m in [('自主','keyword'),('Agnt','fuzzy')]) and len(requests)==count)
             screenshot=http('GET',prefix+'/screenshot')
             (out/'native-result.png').write_bytes(base64.b64decode(screenshot))
             (out/'result.json').write_text(json.dumps({'passed':len(results),'checks':results,'providerRequests':len(requests)},ensure_ascii=False,indent=2))
@@ -155,4 +212,8 @@ with tempfile.TemporaryDirectory(prefix='asa-native-e2e-') as directory:
         if driver and driver.poll() is None:
             os.killpg(driver.pid,signal.SIGTERM)
             driver.wait(timeout=5)
+        if selection_owner and selection_owner.poll() is None:
+            selection_owner.terminate();selection_owner.wait(timeout=5)
+        if 'wm' in locals() and wm.poll() is None:
+            wm.terminate();wm.wait(timeout=5)
         server.shutdown()

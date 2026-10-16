@@ -8,7 +8,7 @@
 
 [Windows x64 v0.1.1 安装包、直接运行版与使用说明](https://github.com/zaijianyimian/ai-selection-assistant/releases/tag/v0.1.1)。安装版无需 Node.js、Rust 或 Visual Studio；需要系统 WebView2 Runtime，安装包会检查并按需安装。
 
-[Linux amd64 v0.1.2 DEB 与 SHA-256](https://github.com/zaijianyimian/ai-selection-assistant/releases/tag/v0.1.2)。本次是 Linux 修复版；Windows 二进制仍使用上面的 v0.1.1。DEB 基于 Ubuntu 26.04 构建，最低 libc6 2.39，并要求包内声明的 WebKitGTK / GTK 等依赖；不适用于 Ubuntu 22.04 的预编译安装。
+[Linux amd64 v0.2.0 DEB 与 SHA-256](https://github.com/zaijianyimian/ai-selection-assistant/releases/tag/v0.2.0)。本次是 Linux 检索与弹窗更新版；Windows 二进制仍使用上面的 v0.1.1。DEB 基于 Ubuntu 26.04 构建，最低 libc6 2.39，并要求包内声明的 WebKitGTK / GTK 等依赖；不适用于 Ubuntu 22.04 的预编译安装。
 
 升级前请从托盘退出旧实例。发布附件含 SHA-256 校验值和第三方许可；安装包未签名。Linux 可安装 DEB，或按下文从源码构建。实际验证范围见 [验证记录](docs/verification.md)。
 
@@ -19,7 +19,8 @@
 - 一次成功的模型回复返回译文、专业术语翻译、中文解释及可选示例。
 - 识别 Java、JVM、数据库、分布式系统、AI / LLM、Agent、机器学习与软件工程术语；提示模型跳过普通词汇。
 - 模型设置持久化、测试连接、目标语言、术语开关、深色 / 浅色 / 跟随系统。
-- 可选本地术语记忆、熟悉程度反馈、手动 / 应用内每日分析、解释风格与背景偏好；不存原文。
+- 可选本地术语记忆、关键词 / 模糊相关检索、熟悉程度反馈、手动 / 应用内每日分析；不存原文，不为搜索下载模型。
+- 440×600 紧凑浮窗，X11 在鼠标锚点旁显示并避让边缘；Wayland 沿用同次运行中的手动位置。
 - 密钥仅保存于 Windows Credential Manager 或 Linux Secret Service；不回传已存密钥、不写入配置或日志。
 - 输入上限 16,000 字符；响应上限 1 MiB；超时、权限、空选区、快捷键冲突、HTTP 错误均有可恢复提示。
 
@@ -113,9 +114,9 @@ npm run tauri build -- --bundles appimage
 DEB 脚本从最终 ELF 和 dpkg-shlibdeps 元数据生成版本依赖，并对成品再次验包；缺少工具/元数据会失败。`python3`、`dpkg-dev`、`binutils` 只是构建和验证工具，不是桌面应用运行依赖。单独验包：
 
 ```bash
-bash scripts/verify-linux-deb.sh '/path/to/AI Selection Assistant_0.1.2_amd64.deb'
+bash scripts/verify-linux-deb.sh '/path/to/AI Selection Assistant_0.2.0_amd64.deb'
 # 安装（apt 自动解析依赖）
-sudo apt install ./ai-selection-assistant_0.1.2_amd64.deb
+sudo apt install ./ai-selection-assistant_0.2.0_amd64.deb
 ```
 
 输出位于 `src-tauri/target/release/bundle/`。同一份 `node_modules` 不宜跨 Windows / WSL 共用；正常开发应在各自系统的独立工作目录执行 `npm ci`。在 WSL 中建议把项目放在 Linux 文件系统以改善编译性能；显示窗口需要 WSLg。
@@ -239,3 +240,15 @@ cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 Rust HTTP 测试使用临时本机 TCP 服务和虚构凭据，不需要真实 API Key，不访问真实付费模型。前端测试涵盖事件顺序、任务恢复、重复请求、错误状态、输出转义与临时密钥生命周期。
 
 构建依据：[Tauri 2 原生依赖](https://v2.tauri.app/start/prerequisites/)、[全局快捷键](https://v2.tauri.app/plugin/global-shortcut/)、[系统托盘](https://v2.tauri.app/learn/system-tray/)。
+
+## 本地术语搜索与选区旁弹窗（0.2.0）
+
+在术语记忆页选择「关键词」或「模糊相关」，搜索词条、译名、领域和独立词义。关键词以空格分隔，最多 8 个且总共最多 200 字符，各关键词都需命中某一字段；百分号/下划线按字面搜索。模糊相关使用本地 SQLite FTS5 trigram、LIKE 和轻量词形相似度，最多合并 1500 个候选，因此非常老的错拼词可能未召回；关键词模式匹配整库并稳定分页。它不是向量语义理解，不联网、不下载模型，不调用模型服务。
+
+旧数据库首次打开会为既有精简字段建立全文索引，不改变术语 ID、计数、反馈和画像；新增/修改/删除/清空都同步索引。不会新增原文或译文历史。
+
+X11 在快捷键触发、窗口失焦前读取鼠标位置，近似划选结束处，先捕获文字再在旁边打开 440×600 紧凑浮窗；靠近边缘会翻转和限制到工作区。键盘选区的鼠标位置可能与文字不同；不能保证其他应用的精确选区矩形。Windows 有同一定位代码路径，但本次未构建/实测新版 Windows 二进制。
+
+Wayland 由合成器控制全局位置，应用不会强行定位；手动拖动浮窗后，同次运行隐藏再打开保留合成器管理的位置。不能承诺跨重启恢复坐标。
+
+最终 DEB 必须小于 **30,000,000 字节（30 MB）**，构建和成品验包都会检查，达线或超线失败。桌面运行不需要模型、Python 或 WebDriver；Python/dpkg/WebDriver 仅用于开发、打包和验收。

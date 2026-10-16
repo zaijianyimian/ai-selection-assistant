@@ -36,3 +36,32 @@ describe('memory user controls', () => {
     view.unmount()
   })
 })
+
+it('selects local fuzzy mode and searches definitions without hiding memory controls', async () => {
+  setActivePinia(createPinia()); native.command.mockReset()
+  native.command.mockImplementation(async (name: string) => name === 'get_memory' ? snapshot() : { running: false, message: '', error: null })
+  const view = mount(MemoryView); await flushPromises()
+  await view.find('#term-search').setValue('自主规划')
+  await view.find('#term-search-mode').setValue('fuzzy'); await flushPromises()
+  expect(native.command).toHaveBeenCalledWith('get_memory', { query: '自主规划', mode: 'fuzzy', offset: 0 })
+  expect(view.text()).toContain('不下载模型、不联网')
+  expect(view.find('#familiarity-42').exists()).toBe(true)
+  expect(view.find('#term-search').attributes('placeholder')).toContain('词义')
+  view.unmount()
+})
+
+it('renders pending, empty and failed keyword searches with a retryable form', async () => {
+  setActivePinia(createPinia()); native.command.mockReset()
+  let resolve!: (value: Snapshot) => void
+  native.command.mockImplementation((name: string) => name === 'get_memory' ? new Promise(r => { resolve = r }) : Promise.resolve({ running: false, message: '', error: null }))
+  const view = mount(MemoryView); await flushPromises()
+  expect(view.text()).toContain('正在搜索本地术语')
+  expect(native.command).toHaveBeenCalledWith('get_memory', { query: '', mode: 'keyword', offset: 0 })
+  resolve({ ...snapshot(), terms: [], total: 0 }); await flushPromises()
+  expect(view.text()).toContain('暂无匹配术语')
+  native.command.mockImplementation(async (name: string) => { if (name === 'get_memory') throw { message: '本地索引不可用' }; return { running: false, message: '', error: null } })
+  await view.find('form').trigger('submit'); await flushPromises()
+  expect(view.find('[role="alert"]').text()).toContain('本地索引不可用')
+  expect(view.find('form button[type="submit"]').attributes('disabled')).toBeUndefined()
+  view.unmount()
+})

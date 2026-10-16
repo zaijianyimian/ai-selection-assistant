@@ -2,6 +2,7 @@ mod analysis;
 mod error;
 mod llm;
 mod memory;
+mod search;
 mod selection;
 mod settings;
 mod settings_commit;
@@ -233,6 +234,11 @@ pub fn start_job(
         .busy
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .map_err(|_| AppError::new("busy", "正在处理上一段文字，请稍候。"))?;
+    let anchor = if popup {
+        window::selection_anchor(&app)
+    } else {
+        None
+    };
     update_job(&app, |job| {
         let revision = job.revision;
         *job = Job {
@@ -249,7 +255,15 @@ pub fn start_job(
     });
     tauri::async_runtime::spawn(async move {
         let _guard = BusyGuard(app.clone());
-        let outcome = run_job(&app, input, clipboard_only, popup, memory_generation).await;
+        let outcome = run_job(
+            &app,
+            input,
+            clipboard_only,
+            popup,
+            memory_generation,
+            anchor,
+        )
+        .await;
         match outcome {
             Ok(result) => update_job(&app, |job| {
                 job.status = "success".into();
@@ -261,7 +275,7 @@ pub fn start_job(
                     job.error = Some(error);
                 });
                 if popup {
-                    let _ = window::show(&app, "translation");
+                    let _ = window::show_translation(&app, anchor).await;
                 }
             }
         }
@@ -275,6 +289,7 @@ async fn run_job(
     clipboard_only: bool,
     popup: bool,
     memory_generation: u64,
+    anchor: Option<tauri::PhysicalPosition<f64>>,
 ) -> AppResult<translation::Translation> {
     let state = app.state::<AppState>();
     let settings = state.settings.lock().await;
@@ -310,7 +325,14 @@ async fn run_job(
     });
     // Capture always completes before any window steals focus from the source app.
     if popup {
-        window::show(app, "translation")?;
+        if let Some(warning) = window::show_translation(app, anchor).await? {
+            update_job(app, |job| {
+                job.warning = Some(match job.warning.take() {
+                    Some(old) => format!("{old} {warning}"),
+                    None => warning,
+                });
+            });
+        }
     }
     settings_commit::ensure_ready(&state.path, &state.recovering)?;
     let key = vault_key().await?.unwrap_or_default();
@@ -454,7 +476,7 @@ fn platform_info() -> String {
         if std::env::var_os("WAYLAND_DISPLAY").is_some()
             || std::env::var("XDG_SESSION_TYPE").is_ok_and(|s| s == "wayland")
         {
-            "Wayland · 请先 Ctrl+C 复制后翻译".into()
+            "Wayland · 先复制；悬浮窗保留本次运行手动位置".into()
         } else {
             "X11 · PRIMARY 选区 / 剪贴板".into()
         }

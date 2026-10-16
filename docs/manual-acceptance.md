@@ -81,7 +81,7 @@
 8. 开启个性化，选择「入门」「后端工程」并保存；对已存术语翻译新文本，比较解释。通过可控本机模型服务检查请求：包含明确偏好、最多 8 个相关词及受限主题数据；`agent` 不能仅因 `reagent` 子串命中。检查上下文总长不超过 2000 字符。语义质量仍需用真实模型判断。
 9. 在翻译或分析请求尚未返回时，删除术语或清空（先检查取消按钮，再确认）。返回后旧任务不能重新填回数据 / 画像；有效译文仍可显示。关闭记忆后同样停止旧任务保存，原有术语仍保留。
 10. 使用可控本地模型配置自动分析（无需真实付费服务），积累至少 20 条新增出现 / 反馈记录并等待一个空闲检查周期（最多约 60 秒）；不足 20 条不请求。失败、重启、休眠恢复后 24 小时内不再自动尝试；应用退出时不会运行。24 小时边界已有单元测试，真实全天运行还需验收。
-11. 在隔离测试用户的数据目录检查 `memory.sqlite3`：仅有 `terms`、`events`、`profiles`、`metadata` 与 SQLite 内部序号表；无原文、完整译文、解释、示例、API Key。数据库不可写或损坏时重启，翻译功能仍应可用并显示记忆存储警告。不要破坏日常使用的数据来做此项测试。
+11. 在隔离测试用户的数据目录检查 `memory.sqlite3`：业务数据位于 `terms`、`events`、`profiles`、`metadata`，另有 `terms_fts` 及其 SQLite FTS 内部表；全文索引仅有 original/translation/domain/sense 四字段；无原文、完整译文、解释、示例、API Key。数据库不可写或损坏时重启，翻译功能仍应可用并显示记忆存储警告。不要破坏日常使用的数据来做此项测试。
 
 以上原生流程应分别在 Windows 11 和 Ubuntu 桌面验收；浏览器预览仅能验证界面和字体。不要把测试服务中的虚构响应当作真实模型语义质量验证。
 
@@ -104,3 +104,25 @@
 运行 build-linux-deb.sh 后，用 verify-linux-deb.sh 从成品重算版本依赖；负向检查运行 `python3 scripts/test-linux-deb.py PACKAGE.deb`，无版本/过低版本/删除 libc6 都必须失败，缺工具/元数据也必须失败。
 
 在干净的兼容环境中实际 `apt install ./PACKAGE.deb`，启动原生进程并检查主窗口；在较低 libc6 的隔离环境中用包管理器验证拒绝安装或要求升级。不能仅根据当前宿主机的 ldd 或 apt -s 声称实装通过。发布说明分别记录源码指导、该包架构和构建环境、最低版本依赖和未测范围。
+
+## 本地检索、附近弹窗与包体（0.2.0）
+
+1. 在含旧术语/反馈/画像的数据库升级，验证原记录不变且词义可搜。分别搜索英文名称、中文一/二/三字、跨字段多关键词和字面 `%`/`_`；模糊模式输入轻微错拼，精确命中应领先。删除/清空再重启，两种模式均不能命中旧条目。
+2. 无网络、无 API Key 时搜索仍可使用。编辑搜索框而不提交后翻页，仍用上次提交条件；切换模式/新搜索回到第一页。快速连续提交时旧响应不能覆盖新结果。模糊相关并非向量语义检索，候选上限为 1500。
+3. 仅在独立 Xvfb 中设置 PRIMARY，用真实全局快捷键在显示器中部和边缘唤起窗口，检查输入内容正确且窗口贴近触发前鼠标、位于工作区。长结果可在紧凑窗口滚动，复制和术语反馈仍在。
+4. Wayland 本次运行手动拖动、关闭再打开应保留合成器位置并显示限制提示；不要求跨重启全局坐标。不同 DPI/负原点有几何测试，多屏硬件结果需单独记录。
+5. 最终 verify-linux-deb.sh 输出实际 bytes，必须 <30,000,000；test-linux-deb.py 对恰好达线及超线文件都要拒绝，并保留已有依赖负向检查。
+
+## 隔离原生自动验收（开发工具）
+
+`scripts/native-e2e.py` 需要 tauri-driver、WebKitWebDriver、xclip、Openbox、Xvfb、xauth 和 gnome-keyring-daemon。所有工具路径都只用于开发，不打入 DEB。只在新建虚拟显示器和 D-Bus 会话运行，以免测试的 PRIMARY、指针和快捷键影响日常桌面：
+
+```bash
+xvfb-run -a env -u WAYLAND_DISPLAY -u GNOME_KEYRING_CONTROL \
+  XDG_SESSION_TYPE=x11 AI_SELECTION_E2E_ISOLATED=1 dbus-run-session -- \
+  python3 scripts/native-e2e.py --binary src-tauri/target/release/ai-selection-assistant \
+  --driver /path/to/tauri-driver --native-driver /path/to/WebKitWebDriver \
+  --xclip /path/to/xclip --output /path/to/test-results
+```
+
+脚本使用临时 XDG 数据目录和可丢弃密钥环，HTTP 模型响应只来自本机测试服务。Openbox 提供真实窗口管理行为；裸 Xvfb 没有窗口管理器，不能代表桌面定位验收。输出结果 JSON、原生截图和窗口树；不验证真实模型质量。

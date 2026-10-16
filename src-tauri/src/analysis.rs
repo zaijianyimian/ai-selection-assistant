@@ -51,8 +51,13 @@ pub async fn get_memory(
     state: State<'_, Runtime>,
     query: String,
     offset: u32,
+    mode: Option<String>,
 ) -> AppResult<crate::memory::MemoryView> {
-    state.database()?.view(query, offset).await
+    let db = state.database()?;
+    match mode {
+        Some(mode) => db.view_with_mode(query, offset, mode).await,
+        None => db.view(query, offset).await,
+    }
 }
 #[tauri::command]
 pub fn get_analysis_status(state: State<'_, Runtime>) -> AppResult<AnalysisStatus> {

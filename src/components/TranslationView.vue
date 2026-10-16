@@ -29,6 +29,7 @@ async function copy() {
     <div v-if="!popup" class="page-heading"><div><div class="eyebrow">YOUR WORDS, UNDERSTOOD</div><h1>读懂每一段文字<span>。</span></h1><p>即刻翻译，理解藏在文字里的专业知识。</p></div><span class="subtle-badge"><span class="status-dot"></span> 本地客户端</span></div>
     <div v-if="!popup" class="shortcut-strip"><span class="shortcut-icon"><Icon name="keyboard" /></span><div><strong>选中文字，唤起翻译</strong><p>在浏览器、编辑器或阅读器中，按下全局快捷键。</p></div><div class="key-combo"><kbd v-for="key in store.settings.shortcut.split('+')" :key="key">{{ key }}</kbd></div></div>
 
+    <p v-if="popup && store.platform.startsWith('Wayland')" class="field-help placement-hint">Wayland 不支持自动贴近选区；可拖动悬浮窗，本次运行隐藏后再打开会保留手动位置。</p>
     <div class="translation-grid">
       <section class="text-panel input-panel">
         <div class="panel-heading"><span><span class="mini-label">01</span>原文</span><span class="muted text-small">{{ store.job.result?.sourceLanguage || '自动检测语言' }}</span></div>

@@ -74,3 +74,14 @@ describe('request display options', () => {
     view.unmount()
   })
 })
+
+it('explains Wayland placement limits while keeping popup controls', () => {
+  setActivePinia(createPinia())
+  const store = useAssistant(); store.platform = 'Wayland · 先复制'
+  const view = mount(TranslationView, { props: { popup: true } })
+  expect(view.find('.placement-hint').text()).toContain('不支持自动贴近选区')
+  expect(view.find('.placement-hint').text()).toContain('本次运行')
+  expect(view.find('#source-text').exists()).toBe(true)
+  expect(view.find('.terms-section').exists()).toBe(true)
+  view.unmount()
+})

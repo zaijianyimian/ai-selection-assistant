@@ -9,6 +9,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+MAX_DEB_BYTES = 30_000_000
 REQUIRED = ['wl-clipboard', 'fonts-noto-cjk', 'libayatana-appindicator3-1']
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -57,6 +58,9 @@ def covers(actual, expected):
 
 def verify(package):
     package = Path(package).resolve(strict=True)
+    size = package.stat().st_size
+    if size >= MAX_DEB_BYTES:
+        raise RuntimeError(f'DEB size budget exceeded: {size} bytes; must be smaller than {MAX_DEB_BYTES}')
     with tempfile.TemporaryDirectory(prefix='asa-deb-') as directory:
         work=Path(directory)
         subprocess.run(['dpkg-deb','-x',str(package),str(work)],check=True)
@@ -77,7 +81,7 @@ def verify(package):
         versions=sorted(set(re.findall(r'GLIBC_(\d+\.\d+(?:\.\d+)?)',symbols)),key=lambda v:tuple(map(int,v.split('.'))))
         if not versions or not covers(actual,'libc6 (>= '+versions[-1]+')'):
             raise RuntimeError('libc6 constraint does not cover final ELF GLIBC symbol floor')
-        print(json.dumps({'package':str(package),'architecture':architecture,'glibcSymbolFloor':versions[-1],'depends':actual,'verified':True},ensure_ascii=False,indent=2))
+        print(json.dumps({'package':str(package),'architecture':architecture,'bytes':size,'maxBytesExclusive':MAX_DEB_BYTES,'glibcSymbolFloor':versions[-1],'depends':actual,'verified':True},ensure_ascii=False,indent=2))
 
 def main():
     tools()
