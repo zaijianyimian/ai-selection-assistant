@@ -13,6 +13,7 @@ kernel.LoadLibraryW.restype = ctypes.c_void_p
 kernel.GetProcAddress.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
 kernel.GetProcAddress.restype = ctypes.c_void_p
 kernel.FreeLibrary.argtypes = [ctypes.c_void_p]
+kernel.GetModuleFileNameW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_uint]
 
 for binary in pathlib.Path('src-tauri/target/debug/deps').glob('ai_selection_assistant_lib-*.exe'):
     log('BINARY', binary)
@@ -34,7 +35,9 @@ for binary in pathlib.Path('src-tauri/target/debug/deps').glob('ai_selection_ass
         if not name: break
         dll = string(offset(name))
         handle = kernel.LoadLibraryW(dll)
-        log('DLL', dll, 'loaded' if handle else 'FAILED', ctypes.get_last_error() if not handle else '')
+        loaded_path = ctypes.create_unicode_buffer(32768)
+        if handle: kernel.GetModuleFileNameW(handle, loaded_path, len(loaded_path))
+        log('DLL', dll, loaded_path.value if handle else 'FAILED', ctypes.get_last_error() if not handle else '')
         if not handle: continue
         thunk = offset(lookup or first)
         for at in range(thunk, len(data), 8):

@@ -3,6 +3,7 @@
 Needs tauri-driver, WebKitWebDriver, xclip, Openbox, gnome-keyring-daemon, Python GI and Pillow. Never uses user credentials.
 """
 import argparse, base64, ctypes, http.server, http.client, json, os, re, signal, subprocess, tempfile, threading, time, urllib.request, socket
+from http.client import RemoteDisconnected
 from pathlib import Path
 
 parser=argparse.ArgumentParser()
@@ -118,7 +119,7 @@ with tempfile.TemporaryDirectory(prefix='asa-native-e2e-') as directory:
                     try:
                         value=http('POST',prefix+'/execute/async',{'script':"const done=arguments[arguments.length-1]; window.__TAURI_INTERNALS__.invoke(arguments[0],arguments[1]).then(x=>done({ok:x}),e=>done({error:e}));",'args':[name,args or {}]})
                         break
-                    except (http.client.RemoteDisconnected,ConnectionResetError,urllib.error.URLError):
+                    except (RemoteDisconnected,ConnectionResetError,urllib.error.URLError):
                         if not name.startswith('get_') or attempt==2:raise
                         time.sleep(.2)
                 if 'error' in value and not allow_error:raise AssertionError((name,value['error']))
@@ -376,6 +377,7 @@ with tempfile.TemporaryDirectory(prefix='asa-native-e2e-') as directory:
             count=len(requests)
             for theme in ['light','dark']:
                 js("document.documentElement.dataset.theme=arguments[0];document.querySelector('.usage-settings').scrollIntoView({block:'start'})",theme)
+                time.sleep(.25) # allow the existing CSS color transition to finish
                 (out/('usage-settings-'+theme+'.png')).write_bytes(base64.b64decode(http('GET',prefix+'/screenshot')))
             check('usage settings read does not call provider',len(requests)==count and 'Token 用量' in body())
             def enter_key():
@@ -405,6 +407,7 @@ with tempfile.TemporaryDirectory(prefix='asa-native-e2e-') as directory:
             check('narrow popup usage keeps copy controls reachable',js("return document.documentElement.scrollWidth<=innerWidth && !!document.querySelector('[aria-label=复制译文]')"))
             (out/'usage-popup-narrow.png').write_bytes(base64.b64decode(http('GET',prefix+'/screenshot')))
             js("document.documentElement.dataset.theme='dark'")
+            time.sleep(.25)
             (out/'usage-popup-narrow-dark.png').write_bytes(base64.b64decode(http('GET',prefix+'/screenshot')))
             usage_path=base/'data/io.github.ai-selection-assistant/usage.sqlite3'
             raw=usage_path.read_bytes()
