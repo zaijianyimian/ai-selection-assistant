@@ -37,6 +37,8 @@ OpenSpec 变更：`add-token-usage-tracking`。候选版本：0.4.0。实施日�
 
 ## 验证环境与限度
 
+Windows 初次运行在测试启动前报 `STATUS_ENTRYPOINT_NOT_FOUND`。下载本项目失败的测试 EXE 检查，确认其导入 `TaskDialogIndirect`，PE 资源目录为 0、没有 Common Controls 清单。Tauri 默认资源路径没有覆盖 lib 单元测试程序；[Tauri 构建属性文档](https://docs.rs/tauri-build/latest/tauri_build/struct.WindowsAttributes.html)及[同类项目的已合并修复](https://github.com/Xoshbin/asyar/pull/499)提供了对应机制。现改为 Windows/MSVC 链接时嵌入 Common Controls v6，并关闭重复的资源清单；Linux 构建路径保持原实现。Windows 测试使用与发布包一致的静态 CRT 配置。实际回归结果待本次 CI 完成后补齐。
+
 所有模型请求使用 localhost 模拟服务及虚构 Key；没有调用付费模型或账户余额接口。Linux 实测环境为 Ubuntu 26.04，DEB 依赖以最终 ELF 验包结果为准，不据此宣称 Ubuntu 22.04 二进制兼容。
 
 测试修正了隔离夹具：D-Bus 激活服务使用与客户端一致的临时 XDG 路径，清理前卸载其私有 document-portal/GVFS FUSE 挂载；冷启动后切换到可见浮窗执行 WebDriver 检查，避免隐藏 WebKit 页面挂起；工具连接重置仅重试幂等读取，不重试翻译、同步或清空等命令。夹具调整没有改变应用凭据策略或放宽断言。
