@@ -365,13 +365,23 @@ with tempfile.TemporaryDirectory(prefix='asa-native-e2e-') as directory:
                 js("document.documentElement.dataset.theme=arguments[0];document.querySelector('.usage-settings').scrollIntoView({block:'start'})",theme)
                 (out/('usage-settings-'+theme+'.png')).write_bytes(base64.b64decode(http('GET',prefix+'/screenshot')))
             check('usage settings read does not call provider',len(requests)==count and 'Token 用量' in body())
-            js("document.querySelector('.usage-help').open=true")
+            def enter_key():
+                http('POST',prefix+'/actions',{'actions':[{'type':'key','id':'usage-keyboard','actions':[{'type':'keyDown','value':'\ue007'},{'type':'keyUp','value':'\ue007'}]}]})
+            js("document.querySelector('.usage-help summary').focus()")
+            enter_key();wait(lambda:js("return document.querySelector('.usage-help').open"))
             check('usage help is local and keyboard reachable',js("return document.querySelector('.usage-help').textContent.includes('不是账户配额') && document.querySelector('.usage-help summary').tabIndex===0"))
             js("const e=document.querySelector('#model');e.value='unsaved-usage-draft';e.dispatchEvent(new Event('input',{bubbles:true}));")
             js("Array.from(document.querySelectorAll('.usage-settings button')).find(e=>e.textContent==='清空用量统计').click()")
             wait(lambda:js("return !!document.querySelector('.usage-confirm')"))
             js("Array.from(document.querySelectorAll('.usage-confirm button')).find(e=>e.textContent==='取消清空').click()")
             check('usage cancellation preserves draft and current totals',invoke('get_usage')['cumulative']['total']['tokens']==total_before_cancel and js("return document.querySelector('#model').value")=='unsaved-usage-draft')
+            before_keyboard=invoke('get_memory',{'query':'','offset':0})
+            js("Array.from(document.querySelectorAll('.usage-settings button')).find(e=>e.textContent==='清空用量统计').focus()")
+            enter_key();wait(lambda:js("return !!document.querySelector('.usage-confirm')"))
+            js("Array.from(document.querySelectorAll('.usage-confirm button')).find(e=>e.textContent==='确认清空用量').focus()")
+            enter_key();wait(lambda:invoke('get_usage')['cumulative']['attempts']==0)
+            check('keyboard confirmed usage clear preserves model draft and memory',js("return document.querySelector('#model').value")=='unsaved-usage-draft' and invoke('get_memory',{'query':'','offset':0})==before_keyboard)
+            invoke('translate_text',{'text':'An Agent keyboard reset fixture.'});wait(lambda:invoke('get_job')['status']=='success')
             # A narrow real popup renders observed usage without horizontal overflow.
             invoke('show_popup')
             for handle in http('GET',prefix+'/window/handles'):
@@ -381,6 +391,8 @@ with tempfile.TemporaryDirectory(prefix='asa-native-e2e-') as directory:
             wait(lambda:'本次 Token' in body())
             check('narrow popup usage keeps copy controls reachable',js("return document.documentElement.scrollWidth<=innerWidth && !!document.querySelector('[aria-label=复制译文]')"))
             (out/'usage-popup-narrow.png').write_bytes(base64.b64decode(http('GET',prefix+'/screenshot')))
+            js("document.documentElement.dataset.theme='dark'")
+            (out/'usage-popup-narrow-dark.png').write_bytes(base64.b64decode(http('GET',prefix+'/screenshot')))
             usage_path=base/'data/io.github.ai-selection-assistant/usage.sqlite3'
             raw=usage_path.read_bytes()
             check('usage store excludes content and secret markers',all(marker not in raw for marker in [b'fixture-provider-key',b'fixture-temporary-key',b'private-source-marker',b'An Agent',b'choices',b'messages']))
@@ -417,6 +429,9 @@ with tempfile.TemporaryDirectory(prefix='asa-native-e2e-') as directory:
             session=http('POST' ,'/session',{'capabilities':{'alwaysMatch':{'browserName':'wry','tauri:options':{'application':str(Path(a.binary).resolve()),'args':['--translate-clipboard']}}}})['sessionId']
             prefix='/session/'+session
             wait(lambda:invoke('get_job')['status']=='success')
+            for handle in http('GET',prefix+'/window/handles'):
+                http('POST',prefix+'/window',{'handle':handle})
+                if 'translation' in js('return location.search'):break
             check('plugin initialization does not imply shortcut ready',invoke('get_shortcut_status')['capable'] and invoke('get_shortcut_status')['status']=='unavailable')
             check('cold clipboard command captures before result',invoke('get_job')['original']=='An Agent from clipboard.' and invoke('get_job')['source']=='clipboard')
             check('restarting process starts with an empty translation cache',not invoke('get_job')['cacheHit'])

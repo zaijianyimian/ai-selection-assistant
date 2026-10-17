@@ -6,7 +6,7 @@ import { errorMessage, type UsageQuery, type UsageSummary } from '../types'
 
 export const useUsage = defineStore('usage', () => {
   const view = ref<UsageSummary | null>(null)
-  const query = ref<UsageQuery>({ offset: 0, limit: 20 })
+  const query = ref<UsageQuery>({ offset: 0, limit: 20, purpose: null })
   const error = ref('')
   const loading = ref(false)
   const resetting = ref(false)

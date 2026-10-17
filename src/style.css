@@ -227,3 +227,5 @@ input[type='checkbox'] { accent-color: var(--accent); }
 .usage-help { border-top: 1px solid var(--line); margin-top: 18px; padding-top: 16px; font-size: 12px; line-height: 1.9; color: var(--secondary); }
 .usage-help summary { cursor: pointer; color: var(--text); }.usage-help p { margin-top: 12px; }
 @media (max-width: 950px) { .usage-periods { grid-template-columns: 1fr; }.usage-line { margin: 12px; } }
+
+.usage-settings .button.secondary { background: var(--soft); color: var(--text); border-color: var(--line); }
