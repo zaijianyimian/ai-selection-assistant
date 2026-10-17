@@ -70,16 +70,16 @@ impl Ledger {
             )
             .map_err(storage_error)
     }
-    pub fn begin(&self, a: &Attempt) -> AppResult<()> {
+    pub fn begin(&mut self, a: &Attempt) -> AppResult<()> {
         if a.generation != self.metadata()?.0 {
             return Ok(());
         }
-        self.db.execute("INSERT OR IGNORE INTO attempts(id,operation,generation,service,label,model,purpose,utc,date,offset) VALUES(?,?,?,?,?,?,?,?,?,?)",
+        let tx = self.db.transaction().map_err(storage_error)?;
+        tx.execute("INSERT OR IGNORE INTO attempts(id,operation,generation,service,label,model,purpose,utc,date,offset) VALUES(?,?,?,?,?,?,?,?,?,?)",
             params![a.id,a.operation,a.generation as i64,a.service,a.label,a.model,a.purpose,a.stamp.utc,a.stamp.date,a.stamp.offset]).map_err(storage_error)?;
-        self.db
-            .execute("UPDATE metadata SET revision=revision+1 WHERE id=1", [])
+        tx.execute("UPDATE metadata SET revision=revision+1 WHERE id=1", [])
             .map_err(storage_error)?;
-        Ok(())
+        tx.commit().map_err(storage_error)
     }
     pub fn finish(&mut self, id: &str, generation: u64, counts: &Counts) -> AppResult<()> {
         let tx = self.db.transaction().map_err(storage_error)?;

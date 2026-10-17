@@ -21,7 +21,7 @@ async fn operation_states_reset_and_unavailable_storage_are_independent() {
         ..Counts::default()
     });
     drop(op.begin()); // timeout/drop keeps coverage unknown
-    let view = runtime.query(Query::default()).await.unwrap();
+    let view = runtime.settled().await;
     assert_eq!(view.cumulative.total.tokens, Some(130));
     assert_eq!(view.cumulative.attempts, 2);
     assert_eq!(view.cumulative.total.unknown, 1);
@@ -141,7 +141,7 @@ async fn injected_clock_captures_each_attempt_across_dst_midnight_and_month() {
         total: Some(30),
         ..Counts::default()
     });
-    let view = runtime.query(Query::default()).await.unwrap();
+    let view = runtime.settled().await;
     assert_eq!(view.month.total.tokens, Some(30));
     assert_eq!(view.today.total.tokens, Some(30));
     assert_eq!(view.cumulative.total.tokens, Some(130));
@@ -150,7 +150,7 @@ async fn injected_clock_captures_each_attempt_across_dst_midnight_and_month() {
         date: "2026-10-31".into(),
         offset: -18000,
     };
-    let view = runtime.query(Query::default()).await.unwrap();
+    let view = runtime.settled().await;
     assert_eq!(view.today.total.tokens, Some(100));
     assert_eq!(view.cumulative.total.tokens, Some(130));
 }
@@ -182,7 +182,7 @@ async fn concurrent_operations_never_overwrite_each_other() {
     for handle in handles {
         handle.join().unwrap();
     }
-    let view = runtime.query(Query::default()).await.unwrap();
+    let view = runtime.settled().await;
     assert_eq!(view.cumulative.total.tokens, Some(160));
     assert_eq!(view.cumulative.attempts, 16);
     assert_eq!(view.group_count, 4);

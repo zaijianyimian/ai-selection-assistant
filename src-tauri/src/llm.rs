@@ -567,7 +567,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(server.await.unwrap().len(), 8);
-        let summary = runtime.query(Query::default()).await.unwrap();
+        let summary = runtime.settled().await;
         assert_eq!(summary.cumulative.attempts, 8);
         assert_eq!(summary.cumulative.total.tokens, Some(655));
         let blocked = runtime.operation(&config, Purpose::ConnectionTest);

@@ -245,6 +245,21 @@ impl Runtime {
         })
         .await
     }
+    #[cfg(test)]
+    pub(crate) async fn settled(&self) -> Summary {
+        // Model completion only enqueues receipts. Stress tests must await the
+        // worker, including slow Windows fsyncs, without changing the UI's 2s cap.
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                if let Ok(summary) = self.query(Query::default()).await {
+                    return summary;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("statistics did not settle within the bounded test deadline")
+    }
 }
 #[derive(Clone)]
 pub struct Operation {
