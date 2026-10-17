@@ -10,6 +10,7 @@ mod settings_commit;
 mod shortcut;
 mod sync;
 mod translation;
+mod usage;
 mod window;
 
 use error::{AppError, AppResult};
@@ -52,6 +53,7 @@ pub struct Job {
     pub result: Option<translation::Translation>,
     pub error: Option<AppError>,
     pub cache_hit: bool,
+    pub usage: Option<usage::Snapshot>,
 }
 
 pub struct AppState {
@@ -172,10 +174,13 @@ struct ConnectionTest {
     message: String,
     elapsed_ms: u128,
     compatibility_fallback: bool,
+    usage: usage::Snapshot,
+    error: Option<AppError>,
 }
 
 #[tauri::command]
 async fn test_connection(
+    usage: State<'_, usage::Runtime>,
     state: State<'_, AppState>,
     config: Settings,
     api_key: Option<String>,
@@ -187,11 +192,20 @@ async fn test_connection(
         None => vault_key().await?.unwrap_or_default(),
     };
     let start = std::time::Instant::now();
-    let result = llm::translate(&config, &key, "Hello, world.").await?;
+    let operation = usage.operation(&config, usage::Purpose::ConnectionTest);
+    let result =
+        llm::translate_observed(&config, &key, "Hello, world.", "", Some(&operation)).await;
     Ok(ConnectionTest {
-        message: "连接成功，模型已返回有效翻译。".into(),
+        message: if result.is_ok() {
+            "连接成功，模型已返回有效翻译。"
+        } else {
+            "连接测试未完成。"
+        }
+        .into(),
         elapsed_ms: start.elapsed().as_millis(),
-        compatibility_fallback: result.compatibility_fallback,
+        compatibility_fallback: result.as_ref().is_ok_and(|r| r.compatibility_fallback),
+        usage: operation.snapshot(),
+        error: result.err(),
     })
 }
 
@@ -404,11 +418,21 @@ async fn run_job(
             .map_err(|_| lock_error())?
             .get(&cache_key, std::time::Instant::now());
         if let Some(result) = cached {
+            let operation = app
+                .state::<usage::Runtime>()
+                .operation(&config, usage::Purpose::Translation);
+            update_job(app, |job| job.usage = Some(operation.cache_hit()));
             // A cache hit is a reuse, not a new term observation or analysis event.
             return Ok((result, true));
         }
     }
-    let mut result = llm::translate_with_context(&config, &key, &selection.text, &context).await?;
+    let operation = app
+        .state::<usage::Runtime>()
+        .operation(&config, usage::Purpose::Translation);
+    let outcome =
+        llm::translate_observed(&config, &key, &selection.text, &context, Some(&operation)).await;
+    update_job(app, |job| job.usage = Some(operation.snapshot()));
+    let mut result = outcome?;
     let mut cacheable = cache_allowed;
     if config.remember_terms {
         let indices: Vec<_> = result
@@ -634,6 +658,9 @@ pub fn run() {
                 .ok();
             app.manage(analysis::Runtime::new(db));
             app.manage(sync::Runtime::default());
+            let usage = usage::Runtime::open(app.path().app_data_dir()?.join("usage.sqlite3"));
+            usage.attach(app.handle().clone());
+            app.manage(usage);
             app.manage(AppState {
                 settings: tokio::sync::Mutex::new(config.clone()),
                 recovering: std::sync::Arc::new(AtomicBool::new(
@@ -701,6 +728,8 @@ pub fn run() {
             get_job,
             translate_text,
             clear_translation_cache,
+            usage::get_usage,
+            usage::clear_usage,
             translate_clipboard,
             copy_translation,
             show_settings,

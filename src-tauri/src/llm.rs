@@ -40,21 +40,40 @@ fn bad_url() -> AppError {
     AppError::new("base_url", "Base URL 需为 HTTPS 地址（本机 localhost 可用 HTTP），不能包含账号密码、查询参数或片段。支持服务根地址、API 路径或完整 /chat/completions 地址。")
 }
 
+#[cfg(test)]
 pub async fn translate(settings: &Settings, key: &str, text: &str) -> AppResult<Translation> {
     translate_with_context(settings, key, text, "").await
 }
 
+#[cfg(test)]
 pub async fn translate_with_context(
     settings: &Settings,
     key: &str,
     text: &str,
     context: &str,
 ) -> AppResult<Translation> {
+    translate_observed(settings, key, text, context, None).await
+}
+
+pub async fn translate_observed(
+    settings: &Settings,
+    key: &str,
+    text: &str,
+    context: &str,
+    observer: Option<&crate::usage::Operation>,
+) -> AppResult<Translation> {
     let text = translation::validate_input(text)?;
     let detection = settings.explain_terms || settings.remember_terms;
     let prompt = translation_prompt(settings, context);
-    let (content, fallback) =
-        complete(settings, key, &prompt, &text, translation::schema()).await?;
+    let (content, fallback) = complete_observed(
+        settings,
+        key,
+        &prompt,
+        &text,
+        translation::schema(),
+        observer,
+    )
+    .await?;
     let mut result = translation::parse(&content, detection)?;
     result.compatibility_fallback = fallback;
     Ok(result)
@@ -82,24 +101,28 @@ pub(crate) fn translation_prompt(settings: &Settings, context: &str) -> String {
     prompt
 }
 
-pub async fn complete(
+pub async fn complete_observed(
     settings: &Settings,
     key: &str,
     system: &str,
     text: &str,
     schema: Value,
+    observer: Option<&crate::usage::Operation>,
 ) -> AppResult<(String, bool)> {
     settings.validate()?;
     crate::settings::validate_key(key)?;
     let deadline = Duration::from_secs(settings.timeout_secs);
-    tokio::time::timeout(deadline, perform(settings, key, system, text, schema))
-        .await
-        .map_err(|_| {
-            AppError::new(
-                "timeout",
-                "模型请求超时，请检查网络、缩短文本或增加超时时间。",
-            )
-        })?
+    tokio::time::timeout(
+        deadline,
+        perform(settings, key, system, text, schema, observer),
+    )
+    .await
+    .map_err(|_| {
+        AppError::new(
+            "timeout",
+            "模型请求超时，请检查网络、缩短文本或增加超时时间。",
+        )
+    })?
 }
 
 async fn perform(
@@ -108,6 +131,7 @@ async fn perform(
     system: &str,
     text: &str,
     schema: Value,
+    observer: Option<&crate::usage::Operation>,
 ) -> AppResult<(String, bool)> {
     let endpoint = normalize_endpoint(&settings.base_url)?;
     let client = Client::builder()
@@ -121,7 +145,15 @@ async fn perform(
     // Each retry removes one unsupported option: schema -> JSON -> prompt,
     // plus at most one removal of temperature. The outer deadline covers all attempts.
     let response = loop {
+        // A dropped ticket (timeout, cancellation or read failure) records unknown.
+        let mut ticket = observer.map(|operation| operation.begin());
         let (status, response) = send(&client, &endpoint, key, &body).await?;
+        if let Some(ticket) = ticket.as_mut() {
+            let counts = serde_json::from_slice::<Value>(&response)
+                .map(|value| crate::usage::Counts::parse(&value))
+                .unwrap_or_default();
+            ticket.finish(counts);
+        }
         if status.is_success() {
             break response;
         }
@@ -458,6 +490,143 @@ mod tests {
     }
     fn completion() -> Value {
         json!({"choices":[{"finish_reason":"stop","message":{"content":json!({"translation":"事务隔离", "sourceLanguage":"English", "terms":[]}).to_string()}}]})
+    }
+    #[tokio::test]
+    async fn observed_attempts_include_retry_failures_and_never_retry_for_statistics() {
+        use crate::usage::{Purpose, Query, Runtime};
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = Runtime::open(dir.path().join("usage.db"));
+        let mut success = completion();
+        success["usage"] = json!({"prompt_tokens":100,"completion_tokens":30,"total_tokens":130});
+        let mut truncated = success.clone();
+        truncated["choices"][0]["finish_reason"] = json!("length");
+        let mut refused = success.clone();
+        refused["choices"][0]["message"]["refusal"] = json!("no");
+        let mut bad = success.clone();
+        bad["choices"][0]["message"]["content"] = json!("not JSON private-source-marker");
+        let (base_url, server) = fixture(vec![
+            (
+                400,
+                json!({"error":"response_format json_schema unsupported"}),
+            ),
+            (200, success.clone()),
+            (
+                401,
+                json!({"error":"fixture-key private-source-marker","usage":{"total_tokens":5}}),
+            ),
+            (200, truncated),
+            (200, refused),
+            (200, bad),
+            (200, completion()),
+            (200, success),
+        ])
+        .await;
+        let config = Settings {
+            base_url,
+            ..Settings::default()
+        };
+        let op = runtime.operation(&config, Purpose::Translation);
+        translate_observed(
+            &config,
+            "fixture-key",
+            "private-source-marker",
+            "",
+            Some(&op),
+        )
+        .await
+        .unwrap();
+        assert_eq!(op.snapshot().usage.attempts, 2);
+        assert_eq!(op.snapshot().usage.total.tokens, Some(130));
+        assert_eq!(op.snapshot().usage.total.unknown, 1);
+        for purpose in [
+            Purpose::ConnectionTest,
+            Purpose::ManualAnalysis,
+            Purpose::AutoAnalysis,
+            Purpose::Translation,
+        ] {
+            let op = runtime.operation(&config, purpose);
+            assert!(translate_observed(
+                &config,
+                "fixture-key",
+                "private-source-marker",
+                "",
+                Some(&op)
+            )
+            .await
+            .is_err());
+            assert_eq!(op.snapshot().usage.attempts, 1);
+            assert!(op.snapshot().usage.total.tokens.is_some());
+        }
+        let unknown = runtime.operation(&config, Purpose::Translation);
+        translate_observed(&config, "", "fixture", "", Some(&unknown))
+            .await
+            .unwrap();
+        assert_eq!(unknown.snapshot().usage.total.unknown, 1);
+        let final_op = runtime.operation(&config, Purpose::Translation);
+        translate_observed(&config, "", "fixture", "", Some(&final_op))
+            .await
+            .unwrap();
+        assert_eq!(server.await.unwrap().len(), 8);
+        let summary = runtime.query(Query::default()).await.unwrap();
+        assert_eq!(summary.cumulative.attempts, 8);
+        assert_eq!(summary.cumulative.total.tokens, Some(655));
+        let blocked = runtime.operation(&config, Purpose::ConnectionTest);
+        assert!(
+            translate_observed(&config, "invalid\r\nkey", "test", "", Some(&blocked))
+                .await
+                .is_err()
+        );
+        assert_eq!(blocked.snapshot().usage.attempts, 0);
+        let bytes = std::fs::read(dir.path().join("usage.db")).unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(!text.contains("fixture-key"));
+        assert!(!text.contains("private-source-marker"));
+        assert!(!text.contains("choices"));
+    }
+    #[tokio::test]
+    async fn timeout_and_oversize_or_interrupted_responses_keep_unknown_attempts() {
+        use crate::usage::{Purpose, Runtime};
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = Runtime::open(dir.path().join("usage.db"));
+        for mode in ["timeout", "oversize", "interrupted"] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let config = Settings {
+                base_url: format!("http://{}", listener.local_addr().unwrap()),
+                ..Settings::default()
+            };
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut buf = [0; 8192];
+                let _ = socket.read(&mut buf).await;
+                if mode == "timeout" {
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                } else {
+                    let length = if mode == "oversize" {
+                        MAX_RESPONSE_BYTES + 1
+                    } else {
+                        500
+                    };
+                    let _=socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n{{").as_bytes()).await;
+                }
+            });
+            let op = runtime.operation(&config, Purpose::Translation);
+            if mode == "timeout" {
+                assert!(tokio::time::timeout(
+                    Duration::from_millis(80),
+                    translate_observed(&config, "", "test", "", Some(&op))
+                )
+                .await
+                .is_err());
+            } else {
+                assert!(translate_observed(&config, "", "test", "", Some(&op))
+                    .await
+                    .is_err());
+            }
+            assert_eq!(op.snapshot().usage.attempts, 1);
+            assert_eq!(op.snapshot().usage.pending, 0);
+            assert_eq!(op.snapshot().usage.total.unknown, 1);
+            server.abort();
+        }
     }
     #[tokio::test]
     async fn schema_rejection_retries_with_json_object() {

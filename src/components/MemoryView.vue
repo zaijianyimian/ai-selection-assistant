@@ -4,6 +4,7 @@ import { useMemory } from '../stores/memory'
 import { useAssistant } from '../stores/assistant'
 import type { Familiarity } from '../types'
 import Icon from './Icon.vue'
+import UsageLine from './UsageLine.vue'
 import { useSync } from '../stores/sync'
 const memory = useMemory()
 const sync = useSync()
@@ -31,6 +32,8 @@ async function remove() { const id = deleteId.value; deleteId.value = undefined;
       <p v-if="memory.status.message" class="analysis-message" role="status">{{ memory.status.message }}</p><div v-if="memory.status.error" class="inline-message error" role="alert">{{ memory.status.error.message }}</div>
       <div v-if="memory.view.versions.length" class="analysis-profile"><div class="field"><label for="profile-version">分析版本</label><select id="profile-version" :value="memory.view.activeVersion" :disabled="memory.working" @change="memory.act('select_profile', { id: Number(($event.target as HTMLSelectElement).value) })"><option v-for="version in memory.view.versions" :key="version.id" :value="version.id">#{{ version.id }} · {{ date(version.createdAt) }}</option></select></div><div class="profile-topics"><span v-for="topic in active?.profile.topics" :key="topic.domain" class="subtle-badge">{{ topic.domain }} · 证据 #{{ topic.evidenceIds.join('、#') }}</span></div><p class="field-help">主题表示近期兴趣，不表示专业水平。删除数据或更改记忆开关会使这些画像失效。</p></div>
       <div v-else class="analysis-empty"><strong>尚无分析画像</strong><p>积累术语后可分析阅读主题。当前仍按偏好设置中的参考背景与解释风格提供解释。</p></div>
+      <p v-if="memory.status.error && !memory.status.usage" class="field-help">未发送模型请求 · 无新增用量</p>
+      <UsageLine :snapshot="memory.status.usage" />
     </section>
     <div class="section-heading"><div><Icon name="book" /><h2>本地术语</h2><span class="count-badge">{{ memory.view.total }}</span></div><button class="text-button danger" :disabled="memory.working || !memory.view.total" @click="deleteId = null">清空全部记忆</button></div>
     <form class="memory-search" @submit.prevent="search"><label for="term-search-mode" class="sr-only">搜索模式</label><select id="term-search-mode" v-model="memory.mode" @change="search"><option value="keyword">关键词</option><option value="fuzzy">模糊相关</option></select><label for="term-search" class="sr-only">搜索术语</label><input id="term-search" v-model="memory.query" placeholder="搜索词条、译名、领域或词义" maxlength="200" /><button class="button secondary" type="submit">{{ memory.searching ? '搜索中…' : '搜索' }}</button><button class="text-button" type="button" @click="memory.refresh">刷新</button></form>

@@ -6,6 +6,9 @@ import { errorMessage, settingsKey, type Settings, type ConnectionTest } from '.
 import Icon from './Icon.vue'
 import SyncSettings from './SyncSettings.vue'
 import ShortcutSettings from './ShortcutSettings.vue'
+import UsageSettings from './UsageSettings.vue'
+import UsageLine from './UsageLine.vue'
+import type { UsageSnapshot } from '../types'
 import { useShortcuts } from '../stores/shortcuts'
 
 const store = useAssistant()
@@ -16,6 +19,7 @@ const removeKey = ref(false)
 const working = ref<'save' | 'test' | null>(null)
 const message = ref('')
 const failure = ref('')
+const testUsage = ref<UsageSnapshot | null>(null)
 const baseline = ref({ ...store.settings })
 const externalUpdate = ref<Settings | null>(null)
 const submitted = ref<Settings | null>(null)
@@ -55,9 +59,12 @@ async function save() {
   finally { apiKey.value = ''; working.value = null; submitted.value = null }
 }
 async function test() {
+  testUsage.value = null
   working.value = 'test'; message.value = ''; failure.value = ''
   try {
     const result = await command<ConnectionTest>('test_connection', { config: { ...form }, apiKey: removeKey.value ? '' : (apiKey.value.trim() || null) })
+    testUsage.value = result.usage ?? null
+    if (result.error) { failure.value = result.error.message; return }
     message.value = `${result.message} 耗时 ${(result.elapsedMs / 1000).toFixed(2)} 秒。${result.compatibilityFallback ? ' 已自动调整输出格式或 Temperature 以兼容服务。' : ''}当前测试不会保存设置。`
   } catch (e) { failure.value = errorMessage(e) }
   finally { apiKey.value = ''; working.value = null }
@@ -92,8 +99,11 @@ async function test() {
         <p class="field-help">出现频率只用于主题分析，不代表你已经掌握。已保存的术语可在「术语记忆」中搜索、反馈、删除和清空。更改记忆或自动分析开关会使现有画像失效，避免旧请求写回；已有术语保留。</p>
       </section>
       <div v-if="failure" class="inline-message error" role="alert">{{ failure }}</div><div v-if="message" class="inline-message success" role="status">{{ message }}</div>
+      <UsageLine :snapshot="testUsage" />
+      <p v-if="failure && !testUsage" class="field-help">此次操作未产生已发送的模型请求。</p>
       <div class="save-bar"><span><Icon name="shield" :size="15" />API Key 由系统安全凭据存储保护</span><button class="button primary" type="submit" :disabled="!!working || shortcuts.pending || !store.ready"><span v-if="working === 'save'" class="spinner"></span><Icon v-else name="check" :size="16" />{{ working === 'save' ? '正在保存…' : '保存设置' }}</button></div>
     </form>
+    <UsageSettings />
     <SyncSettings />
   </section>
 </template>

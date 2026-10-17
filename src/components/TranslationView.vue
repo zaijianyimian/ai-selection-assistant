@@ -5,6 +5,7 @@ import { command } from '../native'
 import { errorMessage } from '../types'
 import Icon from './Icon.vue'
 import TermCard from './TermCard.vue'
+import UsageLine from './UsageLine.vue'
 import { useShortcuts, shortcutLabels } from '../stores/shortcuts'
 
 defineProps<{ popup: boolean }>()
@@ -55,6 +56,8 @@ async function clearCache() {
         <template v-else-if="store.job.result"><div class="translated-text">{{ store.job.result.translation }}</div><div class="result-meta"><span class="status-dot"></span>{{ store.job.cacheHit ? '来自缓存 · 未请求模型' : '翻译完成' }}<span v-if="store.job.source"> · {{ sourceLabels[store.job.source] || store.job.source }}</span></div></template>
         <div v-else-if="store.job.error" class="result-error" role="alert"><Icon name="info" :size="28" /><strong>这次翻译没有完成</strong><p>{{ store.job.error.message }}</p><button class="button secondary" :disabled="!store.input.trim()" @click="store.translate()">重试输入文字</button></div>
         <div v-else class="empty-result"><div class="empty-icon"><Icon name="translate" :size="32" /></div><strong>让理解，自然发生</strong><p>译文会出现在这里<br />专业术语也会得到清晰的解释</p><span class="empty-line"></span><span class="muted text-small">使用你自己的模型，连接更广阔的知识</span></div>
+        <p v-if="store.job.error && !store.job.usage" class="field-help">未发送模型请求 · 无新增用量</p>
+        <UsageLine v-if="!store.busy" :snapshot="store.job.usage" />
         <div v-if="copyError" class="inline-message error" role="alert">{{ copyError }}</div>
       </section>
     </div>

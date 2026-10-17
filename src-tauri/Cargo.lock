@@ -30,12 +30,13 @@ dependencies = [
 
 [[package]]
 name = "ai-selection-assistant"
-version = "0.3.3"
+version = "0.4.0"
 dependencies = [
  "arboard",
  "asa-sync-protocol",
  "asa-sync-server",
  "axum",
+ "chrono",
  "clipboard-win",
  "glib",
  "keyring",
@@ -43,6 +44,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
  "tauri",
  "tauri-build",
  "tauri-plugin-global-shortcut",

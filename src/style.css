@@ -206,3 +206,24 @@ input[type='checkbox'] { accent-color: var(--accent); }
 .shortcut-settings { margin: 14px 0; padding: 14px; border: 1px solid var(--line); border-radius: 10px; }
 .shortcut-command { margin: 10px 0; overflow-wrap: anywhere; font-size: 12px; }
 .shortcut-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
+
+.usage-line { margin: 14px 18px; padding: 12px 0 0; border-top: 1px solid var(--line); font-size: 11px; color: var(--secondary); line-height: 1.8; overflow-wrap: anywhere; }
+.usage-line p + p { margin-top: 4px; }
+.usage-numbers { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.usage-numbers > span:first-child { font-weight: 600; color: var(--text); }
+.usage-settings { margin-top: 24px; }
+.usage-periods { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 18px 0; }
+.usage-periods article { min-width: 0; padding: 14px; background: var(--soft); border: 1px solid var(--line); border-radius: 8px; }
+.usage-periods h3 { font-size: 13px; margin-bottom: 12px; }
+.usage-periods dl > div { display: flex; gap: 8px; justify-content: space-between; font-size: 12px; line-height: 2; }
+.usage-periods dt { color: var(--secondary); flex-shrink: 0; }
+.usage-periods dd { text-align: right; overflow-wrap: anywhere; margin: 0; }
+.usage-filters { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; margin-top: 20px; }
+.usage-filters .field { flex: 1 1 150px; min-width: 0; margin-bottom: 0; }
+.usage-groups { list-style: none; padding: 0; margin: 18px 0; font-size: 11px; overflow-wrap: anywhere; }
+.usage-groups li { padding: 14px 0; border-bottom: 1px solid var(--line); }
+.usage-groups li > div { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-bottom: 6px; }
+.usage-confirm { flex-wrap: wrap; }.usage-confirm p { width: 100%; }
+.usage-help { border-top: 1px solid var(--line); margin-top: 18px; padding-top: 16px; font-size: 12px; line-height: 1.9; color: var(--secondary); }
+.usage-help summary { cursor: pointer; color: var(--text); }.usage-help p { margin-top: 12px; }
+@media (max-width: 950px) { .usage-periods { grid-template-columns: 1fr; }.usage-line { margin: 12px; } }

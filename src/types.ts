@@ -20,6 +20,7 @@ export interface Term { original: string; translation: string; domain: string; e
 export interface Translation { translation: string; sourceLanguage: string; terms: Term[]; compatibilityFallback: boolean }
 export interface RequestOptions { targetLanguage: Settings['targetLanguage']; explainTerms: boolean }
 export interface Job {
+  usage?: UsageSnapshot | null
   cacheHit?: boolean
   requestOptions: RequestOptions | null
   revision: number
@@ -31,7 +32,7 @@ export interface Job {
   error: AppError | null
 }
 export interface SettingsView { settings: Settings; hasApiKey: boolean; warnings: string[] }
-export interface ConnectionTest { message: string; elapsedMs: number; compatibilityFallback: boolean }
+export interface ConnectionTest { message: string; elapsedMs: number; compatibilityFallback: boolean; usage?: UsageSnapshot; error?: AppError | null }
 
 export const defaultSettings = (): Settings => ({
   baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini', temperature: 0.2,
@@ -45,7 +46,15 @@ export type Familiarity = 'unknown' | 'learning' | 'known'
 export interface StoredTerm { id: number; original: string; translation: string; domain: string; senseSummary: string; language: string; count: number; lastSeen: number; familiarity: Familiarity }
 export interface ProfileVersion { id: number; createdAt: number; profile: { topics: { domain: string; evidenceIds: number[] }[] } }
 export interface MemoryView { terms: StoredTerm[]; total: number; pending: number; versions: ProfileVersion[]; activeVersion: number; lastAutoAttempt: number }
-export interface AnalysisStatus { running: boolean; message: string; error: AppError | null }
+export interface AnalysisStatus { running: boolean; message: string; error: AppError | null; usage?: UsageSnapshot | null }
+
+export type UsagePurpose = 'translation' | 'connection-test' | 'manual-analysis' | 'auto-analysis'
+export interface UsageMetric { tokens: string | null; known: number; unknown: number; overflow: boolean }
+export interface UsageAggregate { attempts: number; pending: number; input: UsageMetric; output: UsageMetric; total: UsageMetric; cachedInput: UsageMetric; reasoningOutput: UsageMetric }
+export interface UsageSnapshot { operationId: string; generation: number; source: 'provider' | 'local-cache'; purpose: UsagePurpose; usage: UsageAggregate; persistenceIncomplete: boolean; excludedAfterReset: boolean }
+export interface UsageQuery { service?: string | null; model?: string | null; purpose?: UsagePurpose | null; offset: number; limit: number }
+export interface UsageGroup { service: string; label: string; model: string; purpose: UsagePurpose; usage: UsageAggregate }
+export interface UsageSummary { generation: number; revision: number; since: number; date: string; incomplete: boolean; today: UsageAggregate; month: UsageAggregate; cumulative: UsageAggregate; groups: UsageGroup[]; groupCount: number }
 
 export function errorMessage(error: unknown): string {
   if (typeof error === 'object' && error !== null && 'message' in error && typeof error.message === 'string') return error.message

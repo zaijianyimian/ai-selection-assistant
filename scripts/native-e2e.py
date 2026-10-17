@@ -19,10 +19,16 @@ out=Path(a.output).resolve();out.mkdir(parents=True,exist_ok=True)
 results=[]
 requests=[]
 delay=threading.Event()
+usage_delay=threading.Event()
 class Provider(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         body=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
         requests.append(body)
+        text=body['messages'][1]['content']
+        if text=='usage-retry-fixture' and body.get('response_format',{}).get('type')=='json_schema':
+            data=json.dumps({'error':'response_format json_schema unsupported','usage':{'prompt_tokens':5,'completion_tokens':0,'total_tokens':5}}).encode()
+            self.send_response(400);self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data);return
+        if text=='usage-hold-fixture':usage_delay.wait(15)
         if body['messages'][1]['content']=='cache-error-fixture':
             self.send_response(500);self.end_headers();self.wfile.write(b'{"error":{"message":"fixture server failure"}}');return
         if body['messages'][0]['content'].startswith('Analyze technical'):
@@ -30,7 +36,13 @@ class Provider(http.server.BaseHTTPRequestHandler):
         else:
             if 'slow' in body['messages'][1]['content']: delay.wait(10)
             content={'translation':('智能体完成任务。'*50 if 'slow' in body['messages'][1]['content'] else '智能体完成任务。'),'sourceLanguage':'English','terms':[{'original':'Agent','translation':'智能体','domain':'Agent','explanation':'自主执行任务的系统','senseSummary':'自主执行任务的系统','example':None}]}
-        data=json.dumps({'choices':[{'message':{'content':json.dumps(content)},'finish_reason':'stop'}]}).encode()
+        if text.startswith('usage-'):content['terms']=[]
+        envelope={'choices':[{'message':{'content':json.dumps(content)},'finish_reason':'stop'}], 'usage':{'prompt_tokens':100,'completion_tokens':30,'total_tokens':130,'prompt_tokens_details':{'cached_tokens':20},'completion_tokens_details':{'reasoning_tokens':10}}}
+        if text=='usage-unknown-fixture':envelope.pop('usage')
+        if text=='usage-truncated-fixture':envelope['choices'][0]['finish_reason']='length'
+        if text=='usage-refused-fixture':envelope['choices'][0]['message']['refusal']='fixture refusal'
+        if text=='usage-bad-json-fixture' or body['model']=='usage-invalid-model':envelope['choices'][0]['message']['content']='not valid JSON private-source-marker'
+        data=json.dumps(envelope).encode()
         self.send_response(200); self.send_header('Content-Type','application/json'); self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
     def log_message(self,*args): pass
 server=http.server.ThreadingHTTPServer(('127.0.0.1',0),Provider)
@@ -253,6 +265,7 @@ with tempfile.TemporaryDirectory(prefix='asa-native-e2e-') as directory:
             check('both search modes work without an API key',not invoke('get_settings')['hasApiKey'] and all(invoke('get_memory',{'query':q,'mode':m,'offset':0})['total']==1 for q,m in [('自主','keyword'),('Agnt','fuzzy')]) and len(requests)==count)
             if a.sync_server:
                 count=len(requests)
+                usage_before_sync=invoke('get_usage')['cumulative']
                 check('sync defaults disabled',not invoke('get_sync')['enabled'])
                 args={'url':sync_url,'password':'fixture-native-sync-password-only','deviceName':'Native test'}
                 check('native sync check sends no memory', '未上传' in invoke('test_sync_connection',args))
@@ -299,6 +312,78 @@ with tempfile.TemporaryDirectory(prefix='asa-native-e2e-') as directory:
                 check('native global clear converges',invoke('get_memory',{'query':'','offset':0})['total']==0)
                 invoke('revoke_sync_device',{'id':devices[0]['id']})
                 check('native self revocation stops sync',invoke('get_sync')['status']=='needs-auth')
+                check('sync and global terminology clear preserve usage',invoke('get_usage')['cumulative']==usage_before_sync)
+                exported=remote('GET','/v1/changes?stream=preferences&after=0',token=helper['token'])
+                check('usage never enters sync preference payload',all(x not in json.dumps(exported) for x in ['usage.sqlite3','prompt_tokens','total_tokens','fixture-provider-key']))
+            # Numeric accounting through real IPC and SQLite, using no paid API.
+            for handle in http('GET',prefix+'/window/handles'):
+                http('POST',prefix+'/window',{'handle':handle})
+                if 'translation' not in js('return location.search'):break
+            current=invoke('get_settings')['settings'];current.update({'rememberTerms':True,'autoAnalyze':False,'personalizeExplanations':False,'outputMode':'auto'})
+            invoke('save_settings',{'config':current,'apiKey':'fixture-provider-key','removeApiKey':False})
+            check('usage clear requires confirmation','error' in invoke('clear_usage',{'confirm':False},True))
+            invoke('clear_usage',{'confirm':True})
+            count=len(requests)
+            invoke('translate_text',{'text':'usage-retry-fixture'})
+            wait(lambda:invoke('get_job')['status']=='success')
+            job=invoke('get_job');usage=invoke('get_usage')
+            check('usage counts each compatibility HTTP attempt once',len(requests)==count+2 and job['usage']['usage']['attempts']==2 and job['usage']['usage']['total']['tokens']=='135' and usage['cumulative']['total']['tokens']=='135')
+            invoke('translate_text',{'text':'usage-retry-fixture'});wait(lambda:invoke('get_job')['status']=='success')
+            check('usage cache hit adds zero and no provider calls',len(requests)==count+2 and invoke('get_job')['usage']['source']=='local-cache' and invoke('get_usage')['cumulative']['total']['tokens']=='135')
+            invoke('translate_text',{'text':'usage-retry-fixture','bypassCache':True});wait(lambda:invoke('get_job')['status']=='success')
+            check('usage forced refresh adds its new attempts',invoke('get_usage')['cumulative']['total']['tokens']=='270')
+            for text in ['usage-truncated-fixture','usage-refused-fixture','usage-bad-json-fixture']:
+                invoke('translate_text',{'text':text});wait(lambda:invoke('get_job')['status']=='error')
+                check('usage survives '+text,invoke('get_job')['usage']['usage']['total']['tokens']=='130')
+            invoke('translate_text',{'text':'usage-unknown-fixture'});wait(lambda:invoke('get_job')['status']=='success')
+            check('missing usage remains unknown not zero',invoke('get_job')['usage']['usage']['total']['tokens'] is None and invoke('get_usage')['cumulative']['total']['unknown']==1)
+            tested=invoke('test_connection',{'config':{**current,'model':'usage-invalid-model'},'apiKey':'fixture-temporary-key'})
+            check('failed unsaved connection test preserves usage',tested['error'] is not None and tested['usage']['usage']['total']['tokens']=='130' and invoke('get_settings')['settings']['model']!= 'usage-invalid-model')
+            filtered=invoke('get_usage',{'query':{'purpose':'connection-test','limit':20}})
+            check('usage purpose filter isolates connection tests',filtered['cumulative']['total']['tokens']=='130' and filtered['groups'][0]['model']=='usage-invalid-model')
+            # Prepare memory evidence, then overlap analysis with a held translation.
+            invoke('translate_text',{'text':'An Agent usage concurrency fixture.'});wait(lambda:invoke('get_job')['status']=='success')
+            invoke('translate_text',{'text':'usage-hold-fixture'});wait(lambda:any(r['messages'][1]['content']=='usage-hold-fixture' for r in requests))
+            invoke('analyze_memory');wait(lambda:not invoke('get_analysis_status')['running'])
+            check('analysis and translation usage remain independent',invoke('get_analysis_status')['usage']['usage']['total']['tokens']=='130' and invoke('get_usage')['cumulative']['pending']==1)
+            invoke('clear_usage',{'confirm':True});usage_delay.set();wait(lambda:invoke('get_job')['status']=='success')
+            check('late result stays visible but cannot refill reset totals',invoke('get_job')['usage']['excludedAfterReset'] and invoke('get_job')['usage']['usage']['total']['tokens']=='130' and invoke('get_usage')['cumulative']['attempts']==0)
+            invoke('translate_text',{'text':'An Agent usage after reset.'});wait(lambda:invoke('get_job')['status']=='success')
+            for _ in range(20):
+                invoke('translate_text',{'text':'An Agent automatic usage fixture.','bypassCache':True});wait(lambda:invoke('get_job')['status']=='success')
+            current['autoAnalyze']=True
+            invoke('save_settings',{'config':current,'apiKey':None,'removeApiKey':False})
+            wait(lambda:invoke('get_memory',{'query':'','offset':0})['lastAutoAttempt']>0,75)
+            wait(lambda:not invoke('get_analysis_status')['running'])
+            check('automatic topic analysis reports its own usage',invoke('get_analysis_status')['usage']['purpose']=='auto-analysis' and invoke('get_analysis_status')['usage']['usage']['total']['tokens']=='130')
+            current['autoAnalyze']=False
+            invoke('save_settings',{'config':current,'apiKey':None,'removeApiKey':False})
+            total_before_cancel=invoke('get_usage')['cumulative']['total']['tokens']
+            invoke('show_settings');wait(lambda:js("return !!document.querySelector('.usage-settings')"))
+            count=len(requests)
+            for theme in ['light','dark']:
+                js("document.documentElement.dataset.theme=arguments[0];document.querySelector('.usage-settings').scrollIntoView({block:'start'})",theme)
+                (out/('usage-settings-'+theme+'.png')).write_bytes(base64.b64decode(http('GET',prefix+'/screenshot')))
+            check('usage settings read does not call provider',len(requests)==count and 'Token 用量' in body())
+            js("document.querySelector('.usage-help').open=true")
+            check('usage help is local and keyboard reachable',js("return document.querySelector('.usage-help').textContent.includes('不是账户配额') && document.querySelector('.usage-help summary').tabIndex===0"))
+            js("const e=document.querySelector('#model');e.value='unsaved-usage-draft';e.dispatchEvent(new Event('input',{bubbles:true}));")
+            js("Array.from(document.querySelectorAll('.usage-settings button')).find(e=>e.textContent==='清空用量统计').click()")
+            wait(lambda:js("return !!document.querySelector('.usage-confirm')"))
+            js("Array.from(document.querySelectorAll('.usage-confirm button')).find(e=>e.textContent==='取消清空').click()")
+            check('usage cancellation preserves draft and current totals',invoke('get_usage')['cumulative']['total']['tokens']==total_before_cancel and js("return document.querySelector('#model').value")=='unsaved-usage-draft')
+            # A narrow real popup renders observed usage without horizontal overflow.
+            invoke('show_popup')
+            for handle in http('GET',prefix+'/window/handles'):
+                http('POST',prefix+'/window',{'handle':handle})
+                if 'translation' in js('return location.search'):break
+            http('POST',prefix+'/window/rect',{'width':360,'height':600})
+            wait(lambda:'本次 Token' in body())
+            check('narrow popup usage keeps copy controls reachable',js("return document.documentElement.scrollWidth<=innerWidth && !!document.querySelector('[aria-label=复制译文]')"))
+            (out/'usage-popup-narrow.png').write_bytes(base64.b64decode(http('GET',prefix+'/screenshot')))
+            usage_path=base/'data/io.github.ai-selection-assistant/usage.sqlite3'
+            raw=usage_path.read_bytes()
+            check('usage store excludes content and secret markers',all(marker not in raw for marker in [b'fixture-provider-key',b'fixture-temporary-key',b'private-source-marker',b'An Agent',b'choices',b'messages']))
             # Fixed-command warm activation, then a cold CLI session. Synthetic text/local provider only.
             clipboard_owner=subprocess.Popen([str(Path(a.xclip).resolve()),'-selection','clipboard','-in','-quiet'],stdin=subprocess.PIPE,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,env=env)
             clipboard_owner.stdin.write(b'An Agent from clipboard.');clipboard_owner.stdin.close()
@@ -316,6 +401,7 @@ with tempfile.TemporaryDirectory(prefix='asa-native-e2e-') as directory:
             check('clipboard capture error sends no provider request',len(requests)==count)
             clipboard_owner=subprocess.Popen([str(Path(a.xclip).resolve()),'-selection','clipboard','-in','-quiet'],stdin=subprocess.PIPE,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,env=env)
             clipboard_owner.stdin.write(b'An Agent from clipboard.');clipboard_owner.stdin.close();time.sleep(.15)
+            usage_before_restart=invoke('get_usage')['cumulative']
             http('DELETE','/session/'+session);session=None
             time.sleep(.3)
             # Hold the default key in this isolated display before startup: plugin init
@@ -334,6 +420,8 @@ with tempfile.TemporaryDirectory(prefix='asa-native-e2e-') as directory:
             check('plugin initialization does not imply shortcut ready',invoke('get_shortcut_status')['capable'] and invoke('get_shortcut_status')['status']=='unavailable')
             check('cold clipboard command captures before result',invoke('get_job')['original']=='An Agent from clipboard.' and invoke('get_job')['source']=='clipboard')
             check('restarting process starts with an empty translation cache',not invoke('get_job')['cacheHit'])
+            after_restart=invoke('get_usage')['cumulative']
+            check('usage survives actual process restart',after_restart['attempts']==usage_before_restart['attempts']+1 and int(after_restart['total']['tokens'])==int(usage_before_restart['total']['tokens'])+130)
             check('cold clipboard launch keeps main hidden',not invoke('plugin:window|is_visible',{'label':'main'}))
             check('cold clipboard launch opens result popup',invoke('plugin:window|is_visible',{'label':'translation'}))
             # WebKit's screenshot endpoint waits forever for a hidden main webview.
@@ -348,6 +436,7 @@ with tempfile.TemporaryDirectory(prefix='asa-native-e2e-') as directory:
             (out/'result.json').write_text(json.dumps({'passed':len(results),'checks':results,'providerRequests':len(requests)},ensure_ascii=False,indent=2))
     finally:
         delay.set()
+        usage_delay.set()
         if session:
             try:http('DELETE','/session/'+session)
             except Exception:pass
