@@ -104,7 +104,10 @@ pub fn migrate(db: &mut Connection) -> AppResult<()> {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o600)).map_err(err)?;
         }
-        std::fs::File::open(&temp)
+        // Windows FlushFileBuffers requires a writable handle; File::open is read-only.
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&temp)
             .and_then(|f| f.sync_all())
             .map_err(err)?;
         std::fs::rename(temp, &backup).map_err(err)?;
