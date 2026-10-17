@@ -6,11 +6,11 @@
 
 ## 下载
 
-[Windows x64 v0.1.1 安装包、直接运行版与使用说明](https://github.com/zaijianyimian/ai-selection-assistant/releases/tag/v0.1.1)。安装版无需 Node.js、Rust 或 Visual Studio；需要系统 WebView2 Runtime，安装包会检查并按需安装。
+[Windows x64 v0.3.3 预发布：安装版 EXE 与便携版 ZIP](https://github.com/zaijianyimian/ai-selection-assistant/releases/tag/v0.3.3)。无需 Node.js、Rust 或 Visual Studio；需要系统 WebView2 Runtime，安装包会检查并按需下载。Windows 原生测试、启动、静默安装和卸载检查已通过，跨应用划词和多屏操作仍待人工验收。
 
-[Linux amd64 v0.3.2 预发布：DEB、同步服务与 SHA-256](https://github.com/zaijianyimian/ai-selection-assistant/releases/tag/v0.3.2)。包含自托管多端同步、GNOME Wayland 系统快捷键和下拉框显示修复；真实 Wayland 按键与重新登录验收仍待完成。Windows 二进制仍使用上面的 v0.1.1。DEB 基于 Ubuntu 26.04 构建，最低 libc6 2.39，并要求包内声明的 WebKitGTK / GTK 等依赖；不适用于 Ubuntu 22.04 的预编译安装。
+[Linux amd64 v0.3.3 预发布：DEB 与 SHA-256](https://github.com/zaijianyimian/ai-selection-assistant/releases/tag/v0.3.3)。新增本次运行内的翻译缓存、术语记忆页排版调整和 Windows 同步备份修复，保留既有自托管同步、GNOME 快捷键和本地搜索；真实 Wayland 按键与重新登录仍待验收。DEB 基于 Ubuntu 26.04 构建，最低 libc6 2.39，并要求包内声明的 WebKitGTK / GTK 等依赖；不适用于 Ubuntu 22.04 的预编译安装。
 
-升级前请从托盘退出旧实例。发布附件含 SHA-256 校验值和第三方许可；安装包未签名。Linux 可安装 DEB，或按下文从源码构建。实际验证范围见 [验证记录](docs/verification.md)。
+升级前请从托盘退出旧实例。发布附件含 SHA-256 校验值和第三方许可；安装包未签名。Linux 可安装 DEB，或按下文从源码构建。实际验证范围见 [v0.3.3 发布与验证说明](docs/release-0.3.3.md)。
 
 ## 功能
 
@@ -58,6 +58,8 @@ npm run tauri build -- --bundles nsis
 ```powershell
 .\scripts\build-windows.ps1
 ```
+
+也可在 GitHub Actions 手动运行 `Windows packages` 工作流：在 Windows runner 上执行前端/Rust 测试、构建，并检查安装、启动和卸载，再从 `windows-x64` artifact 下载成品；工作流不会自动发布 Release。
 
 脚本会检查每一步的退出状态，不会在构建失败时生成假的安装包；不上传文件。Windows 安装包默认仅为当前用户安装，提供简体中文和英文。直接运行版需要系统已有 WebView2 Runtime，安装包会检查并按需安装该运行库。
 
@@ -117,7 +119,7 @@ DEB 脚本从最终 ELF 和 dpkg-shlibdeps 元数据生成版本依赖，并对�
 ```bash
 bash scripts/verify-linux-deb.sh '/path/to/AI Selection Assistant_0.3.2_amd64.deb'
 # 安装（apt 自动解析依赖）
-sudo apt install ./ai-selection-assistant_0.3.2_amd64.deb
+sudo apt install ./ai-selection-assistant_0.3.3_amd64.deb
 ```
 
 输出位于 `src-tauri/target/release/bundle/`。同一份 `node_modules` 不宜跨 Windows / WSL 共用；正常开发应在各自系统的独立工作目录执行 `npm ci`。在 WSL 中建议把项目放在 Linux 文件系统以改善编译性能；显示窗口需要 WSLg。
@@ -194,7 +196,7 @@ DeepSeek 配置示例：Base URL `https://api.deepseek.com/v1`，Model `deepseek
 - 可选术语记忆位于 Tauri app data 目录的 `memory.sqlite3`：Windows 通常为 `%APPDATA%\io.github.ai-selection-assistant\`，Linux 为 `~/.local/share/io.github.ai-selection-assistant/`（以系统 XDG 配置为准）。其中没有 API Key；清空会删除术语、出现、反馈与画像内容，保留内部递增 ID 和调度时间以防旧请求及重试。
 - Windows 自动模式可以恢复原有**文本**，不能完整恢复 HTML、图片等多格式剪贴板。纯图片 / 文件剪贴板会提示先手动复制。要避免任何模拟复制与恢复操作，使用 **仅剪贴板**模式。
 - 自动模式不会在模拟复制未产生新剪贴板事件时翻译旧内容。权限较高的目标应用、受保护 PDF、禁用复制的网页可能拒绝读取，应手动复制或输入。
-- 术语准确性与模型相关，提示词约束范围与普通词过滤，但没有独立事实检索。X11 已支持鼠标附近定位；新版 Windows 二进制未构建/实测，GNOME Wayland 的真实按键和重新登录仍待验收。流式输出、原文历史记录和自动更新尚未提供。
+- 术语准确性与模型相关，提示词约束范围与普通词过滤，但没有独立事实检索。X11 已支持鼠标附近定位；新版 Windows 已完成构建、原生单元测试和启动/安装/卸载自动检查；跨应用划词、GNOME Wayland 的真实按键和重新登录仍待人工验收。流式输出、原文历史记录和自动更新尚未提供。
 
 ## 目录
 
@@ -248,7 +250,7 @@ Rust HTTP 测试使用临时本机 TCP 服务和虚构凭据，不需要真实 A
 
 旧数据库首次打开会为既有精简字段建立全文索引，不改变术语 ID、计数、反馈和画像；新增/修改/删除/清空都同步索引。不会新增原文或译文历史。
 
-X11 在快捷键触发、窗口失焦前读取鼠标位置，近似划选结束处，先捕获文字再在旁边打开 440×600 紧凑浮窗；靠近边缘会翻转和限制到工作区。键盘选区的鼠标位置可能与文字不同；不能保证其他应用的精确选区矩形。Windows 有同一定位代码路径，但本次未构建/实测新版 Windows 二进制。
+X11 在快捷键触发、窗口失焦前读取鼠标位置，近似划选结束处，先捕获文字再在旁边打开 440×600 紧凑浮窗；靠近边缘会翻转和限制到工作区。键盘选区的鼠标位置可能与文字不同；不能保证其他应用的精确选区矩形。Windows 有同一定位代码路径，已构建新版并完成启动自动检查；多屏/DPI 和真实跨应用定位仍待人工验收。
 
 Wayland 由合成器控制全局位置，应用不会强行定位；手动拖动浮窗后，同次运行隐藏再打开保留合成器管理的位置。不能承诺跨重启恢复坐标。
 
