@@ -28,6 +28,21 @@ jobs:
         run: npm test
       - name: Rust tests on Windows
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib
+      - name: Diagnose test loader failure
+        if: failure()
+        shell: pwsh
+        run: |
+          python scripts/diagnose-windows-imports.py
+      - name: Upload test loader diagnostics
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: windows-loader-diagnostics
+          path: |
+            windows-loader-diagnostics.txt
+            src-tauri/target/debug/deps/ai_selection_assistant_lib-*.exe
+          if-no-files-found: warn
+          retention-days: 7
       - name: Build Windows installer and portable EXE
         shell: pwsh
         run: ./scripts/build-windows.ps1

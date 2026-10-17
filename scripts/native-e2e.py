@@ -2,7 +2,7 @@
 """Real Tauri IPC + WebKit UI test. Run ONLY under isolated Xvfb and dbus-run-session.
 Needs tauri-driver, WebKitWebDriver, xclip, Openbox, gnome-keyring-daemon, Python GI and Pillow. Never uses user credentials.
 """
-import argparse, base64, ctypes, http.server, json, os, re, signal, subprocess, tempfile, threading, time, urllib.request, socket
+import argparse, base64, ctypes, http.server, http.client, json, os, re, signal, subprocess, tempfile, threading, time, urllib.request, socket
 from pathlib import Path
 
 parser=argparse.ArgumentParser()
@@ -74,6 +74,10 @@ with tempfile.TemporaryDirectory(prefix='asa-native-e2e-') as directory:
     for key,sub in [('XDG_CONFIG_HOME','config'),('XDG_DATA_HOME','data'),('XDG_CACHE_HOME','cache'),('XDG_RUNTIME_DIR','runtime')]:
         path=base/sub;path.mkdir(mode=0o700);env[key]=str(path)
     env.pop('GNOME_KEYRING_CONTROL',None)
+    # D-Bus activation must use the same disposable directories as the client.
+    # Otherwise an auto-activated keyring/dconf service inherits the caller's
+    # desktop paths even though the application itself has isolated XDG values.
+    subprocess.run(['dbus-update-activation-environment',*[key+'='+env[key] for key in ('XDG_CONFIG_HOME','XDG_DATA_HOME','XDG_CACHE_HOME','XDG_RUNTIME_DIR')]],env=env,check=True,timeout=10)
     env['WEBKIT_DISABLE_COMPOSITING_MODE']='1'
     config_path=base/'config/io.github.ai-selection-assistant/settings.json';config_path.parent.mkdir(parents=True)
     config_path.write_text(json.dumps({'baseUrl':f'http://127.0.0.1:{server.server_port}/v1','model':'fixture-model','rememberTerms':True}))
@@ -97,6 +101,7 @@ with tempfile.TemporaryDirectory(prefix='asa-native-e2e-') as directory:
             if '=' in line:
                 k,v=line.split('=',1)
                 if k.startswith('GNOME_KEYRING'):env[k]=v
+        subprocess.run(['dbus-update-activation-environment',*[key+'='+value for key,value in env.items() if key.startswith('GNOME_KEYRING')]],env=env,check=True,timeout=10)
         tray_process=subprocess.Popen(['python3',str(Path(__file__).with_name('native-tray-watch.py')),str(out/'tray-icon.json'),str(Path(__file__).resolve().parents[1]/'src-tauri/icons/32x32.png')],env=env,stdout=(out/'tray-watch.log').open('w'),stderr=subprocess.STDOUT)
         wm=subprocess.Popen(['openbox'],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
         time.sleep(.5)
@@ -107,7 +112,15 @@ with tempfile.TemporaryDirectory(prefix='asa-native-e2e-') as directory:
             prefix='/session/'+session
             def js(script,*args):return http('POST',prefix+'/execute/sync',{'script':script,'args':list(args)})
             def invoke(name,args=None,allow_error=False):
-                value=http('POST',prefix+'/execute/async',{'script':"const done=arguments[arguments.length-1]; window.__TAURI_INTERNALS__.invoke(arguments[0],arguments[1]).then(x=>done({ok:x}),e=>done({error:e}));",'args':[name,args or {}]})
+                # WebKitWebDriver can reset a connection while a webview changes
+                # visibility. Only idempotent reads may be retried, never commands.
+                for attempt in range(3):
+                    try:
+                        value=http('POST',prefix+'/execute/async',{'script':"const done=arguments[arguments.length-1]; window.__TAURI_INTERNALS__.invoke(arguments[0],arguments[1]).then(x=>done({ok:x}),e=>done({error:e}));",'args':[name,args or {}]})
+                        break
+                    except (http.client.RemoteDisconnected,ConnectionResetError,urllib.error.URLError):
+                        if not name.startswith('get_') or attempt==2:raise
+                        time.sleep(.2)
                 if 'error' in value and not allow_error:raise AssertionError((name,value['error']))
                 return value.get('ok') if 'ok' in value else value
             def body():return js('return document.body.innerText')
@@ -470,4 +483,10 @@ with tempfile.TemporaryDirectory(prefix='asa-native-e2e-') as directory:
             tray_process.terminate();tray_process.wait(timeout=5)
         if sync_process and sync_process.poll() is None:
             sync_process.terminate();sync_process.wait(timeout=5)
+        # The isolated activation environment may start a document portal. Its
+        # private FUSE mount must be unmounted before TemporaryDirectory cleanup.
+        private_runtime=str(base/'runtime')+'/'
+        private_mounts=[line.split()[4] for line in Path('/proc/self/mountinfo').read_text().splitlines() if line.split()[4].startswith(private_runtime)]
+        for mount in sorted(private_mounts,key=len,reverse=True):
+            subprocess.run(['fusermount3','-u','-z',mount],env=env,check=True,timeout=10)
         server.shutdown()
