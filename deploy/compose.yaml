@@ -1,0 +1,49 @@
+name: asa-sync
+services:
+  sync:
+    image: asa-sync-server:local
+    build:
+      context: ..
+      dockerfile: server/Dockerfile
+    restart: unless-stopped
+    init: true
+    user: "10001:10001"
+    environment:
+      SYNC_DATABASE: /data/sync.sqlite3
+      SYNC_BIND: 0.0.0.0:8080
+      SYNC_STORAGE_BYTES: ${SYNC_STORAGE_BYTES:-1073741824}
+    volumes:
+      - sync_data:/data
+      - sync_backups:/backups
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 384m
+    cpus: 1.0
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      SYNC_DOMAIN: ${SYNC_DOMAIN:?Set SYNC_DOMAIN in .env}
+      ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - sync
+    security_opt:
+      - no-new-privileges:true
+volumes:
+  sync_data:
+  sync_backups:
+  caddy_data:
+  caddy_config:

@@ -1,0 +1,18 @@
+{
+  "code": "conflict",
+  "context": {
+    "protocol": 1,
+    "workspaceId": "workspace-1",
+    "historyId": "history-1",
+    "memoryGeneration": 1,
+    "revision": 7
+  },
+  "conflicts": [
+    {
+      "opId": "operation-1",
+      "code": "field_changed",
+      "remoteValue": "dark",
+      "remoteRevision": 7
+    }
+  ]
+}

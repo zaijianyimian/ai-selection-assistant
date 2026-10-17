@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Real Tauri IPC + WebKit UI test. Run ONLY under isolated Xvfb and dbus-run-session.
-Needs tauri-driver, WebKitWebDriver, xclip, Openbox and gnome-keyring-daemon. Never uses user credentials.
+Needs tauri-driver, WebKitWebDriver, xclip, Openbox, gnome-keyring-daemon, Python GI and Pillow. Never uses user credentials.
 """
-import argparse, base64, ctypes, http.server, json, os, re, signal, subprocess, tempfile, threading, time, urllib.request
+import argparse, base64, ctypes, http.server, json, os, re, signal, subprocess, tempfile, threading, time, urllib.request, socket
 from pathlib import Path
 
 parser=argparse.ArgumentParser()
@@ -11,6 +11,7 @@ parser.add_argument('--driver',required=True)
 parser.add_argument('--native-driver',required=True)
 parser.add_argument('--output',required=True)
 parser.add_argument('--xclip',required=True)
+parser.add_argument('--sync-server',help='Optional independent sync service binary for native sync IPC tests')
 a=parser.parse_args()
 assert not os.environ.get('WAYLAND_DISPLAY'), 'Use an isolated Xvfb display'
 assert os.environ.get('AI_SELECTION_E2E_ISOLATED')=='1', 'Explicit isolation is required'
@@ -52,7 +53,7 @@ def http(method,path,data=None):
     if isinstance(value,dict) and isinstance(value.get('error'),str): raise RuntimeError(str(value))
     return value
 
-session=None;driver=None;keyring=None;selection_owner=None
+session=None;driver=None;keyring=None;selection_owner=None;sync_process=None;tray_process=None;clipboard_owner=None;reserved_display=None
 with tempfile.TemporaryDirectory(prefix='asa-native-e2e-') as directory:
     base=Path(directory)
     env=os.environ.copy()
@@ -63,12 +64,26 @@ with tempfile.TemporaryDirectory(prefix='asa-native-e2e-') as directory:
     config_path=base/'config/io.github.ai-selection-assistant/settings.json';config_path.parent.mkdir(parents=True)
     config_path.write_text(json.dumps({'baseUrl':f'http://127.0.0.1:{server.server_port}/v1','model':'fixture-model','rememberTerms':True}))
     try:
+        if a.sync_server:
+            sync_env={**env,'SYNC_DATABASE':str(base/'sync-service.sqlite3')}
+            with socket.socket() as port_socket:
+                port_socket.bind(('127.0.0.1',0));sync_port=port_socket.getsockname()[1]
+            sync_env['SYNC_BIND']=f'127.0.0.1:{sync_port}'
+            sync_binary=str(Path(a.sync_server).resolve())
+            subprocess.run([sync_binary,'init'],input='fixture-native-sync-password-only',text=True,env=sync_env,capture_output=True,check=True)
+            sync_log=(out/'sync-service.log').open('w')
+            sync_process=subprocess.Popen([sync_binary,'serve'],env=sync_env,stdout=sync_log,stderr=sync_log)
+            sync_url=f'http://127.0.0.1:{sync_port}'
+            def service_ready():
+                with urllib.request.urlopen(sync_url+'/healthz',timeout=2) as r:return r.status==200
+            wait(service_ready)
         keyring=subprocess.run(['gnome-keyring-daemon','--unlock','--components=secrets'],input='fixture-keyring-password\n',text=True,capture_output=True,env=env,timeout=10)
         assert keyring.returncode==0,keyring.stderr
         for line in keyring.stdout.splitlines():
             if '=' in line:
                 k,v=line.split('=',1)
                 if k.startswith('GNOME_KEYRING'):env[k]=v
+        tray_process=subprocess.Popen(['python3',str(Path(__file__).with_name('native-tray-watch.py')),str(out/'tray-icon.json'),str(Path(__file__).resolve().parents[1]/'src-tauri/icons/32x32.png')],env=env,stdout=(out/'tray-watch.log').open('w'),stderr=subprocess.STDOUT)
         wm=subprocess.Popen(['openbox'],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
         time.sleep(.5)
         with (out/'driver.log').open('w') as log:
@@ -86,6 +101,8 @@ with tempfile.TemporaryDirectory(prefix='asa-native-e2e-') as directory:
                 assert condition,name
                 results.append(name); print('PASS',name,flush=True)
             wait(lambda:'工作空间' in body())
+            shortcut_status=invoke('get_shortcut_status')
+            check('native shortcut ready requires real registration',shortcut_status['backend']=='native' and shortcut_status['status']=='ready')
             current=invoke('get_settings')['settings']
             invoke('save_settings',{'config':current,'apiKey':'fixture-provider-key','removeApiKey':False})
             check('isolated credential save/read',invoke('get_settings')['hasApiKey'])
@@ -164,6 +181,9 @@ with tempfile.TemporaryDirectory(prefix='asa-native-e2e-') as directory:
             js("document.querySelector('[data-testid=\"settings-external-update\"] button').click()")
             wait(lambda:js("return document.querySelector('#model').value")=='external-model')
             check('native UI reloads saved configuration',True)
+            wait(lambda:'已注册' in js("return document.querySelector('[data-testid=shortcut-settings]').innerText"))
+            js("document.querySelector('[data-testid=shortcut-settings]').scrollIntoView({block:'center'})")
+            (out/'shortcut-settings.png').write_bytes(base64.b64decode(http('GET',prefix+'/screenshot')))
             # Run a real asynchronous request, then update settings before releasing the local provider.
             invoke('translate_text',{'text':'A slow Agent completes a task.'})
             wait(lambda:'slow' in requests[-1]['messages'][1]['content'])
@@ -201,8 +221,99 @@ with tempfile.TemporaryDirectory(prefix='asa-native-e2e-') as directory:
             invoke('save_settings',{'config':external,'apiKey':None,'removeApiKey':True})
             count=len(requests)
             check('both search modes work without an API key',not invoke('get_settings')['hasApiKey'] and all(invoke('get_memory',{'query':q,'mode':m,'offset':0})['total']==1 for q,m in [('自主','keyword'),('Agnt','fuzzy')]) and len(requests)==count)
-            screenshot=http('GET',prefix+'/screenshot')
-            (out/'native-result.png').write_bytes(base64.b64decode(screenshot))
+            if a.sync_server:
+                count=len(requests)
+                check('sync defaults disabled',not invoke('get_sync')['enabled'])
+                args={'url':sync_url,'password':'fixture-native-sync-password-only','deviceName':'Native test'}
+                check('native sync check sends no memory', '未上传' in invoke('test_sync_connection',args))
+                connected=invoke('connect_sync',{**args,'consent':True,'replaceTarget':False,'importLocal':False})
+                check('native enrollment exposes no credentials',connected['enabled']and not connected['background']and 'token' not in connected and 'password' not in connected)
+                synced=invoke('sync_now')
+                check('native keyring token synchronizes',synced['lastSuccess']>0 and synced['pending']==0)
+                check('native sync never calls model',len(requests)==count)
+                devices=invoke('sync_devices');check('native device list',len(devices)==1)
+                handles=http('GET',prefix+'/window/handles')
+                for handle in handles:
+                    http('POST',prefix+'/window',{'handle':handle})
+                    if 'translation' not in js('return location.search'):break
+                invoke('show_settings');wait(lambda:js("return !!document.querySelector('#sync-url')"))
+                check('native image icon loaded',js("return !!document.querySelector('.brand img')?.naturalWidth"))
+                check('native tray uses supplied image',wait(lambda:(out/'tray-icon.json').exists(),5))
+                # A remote preference survives a real filesystem publish failure and notifies a dirty draft.
+                js("const e=document.querySelector('#model');e.value='sync-unsaved-draft';e.dispatchEvent(new Event('input',{bubbles:true}));")
+                def remote(method,path,data=None,token=None):
+                    headers={'Content-Type':'application/json'}
+                    if token:headers['Authorization']='Bearer '+token
+                    req=urllib.request.Request(sync_url+path,data=None if data is None else json.dumps(data).encode(),method=method,headers=headers)
+                    with urllib.request.urlopen(req,timeout=10)as response:return json.load(response)
+                helper=remote('POST','/v1/devices/enroll',{'protocol':1,'password':'fixture-native-sync-password-only','deviceName':'Preference fixture'})
+                page=remote('GET','/v1/changes?stream=preferences&after=0',token=helper['token'])
+                theme_revision=max(r['revision']for r in page['changes']if r['change'].get('field')=='theme')
+                context=helper['context']
+                remote('POST','/v1/push',{'protocol':1,'workspaceId':context['workspaceId'],'historyId':context['historyId'],'operations':[{'id':'native-preference-update','generation':1,'action':{'type':'preference','field':'theme','baseRevision':theme_revision,'value':'light'}}]},helper['token'])
+                config_path.parent.chmod(0o500)
+                try:failed=invoke('sync_now',allow_error=True)
+                finally:config_path.parent.chmod(0o700)
+                check('remote preference publish failure is recoverable','error'in failed and invoke('get_settings')['settings']['theme']!='light')
+                invoke('configure_sync',{'enabled':True,'background':False});invoke('sync_now')
+                check('durable inbox retries without replaying cloud changes',invoke('get_settings')['settings']['theme']=='light'and invoke('get_settings')['settings']['model']=='external-model')
+                wait(lambda:js("return !!document.querySelector('[data-testid=settings-external-update]')"))
+                check('remote preference preserves native dirty draft',js("return document.querySelector('#model').value")=='sync-unsaved-draft')
+                js("document.querySelector('#sync-url').scrollIntoView({block:'start'})")
+                (out/'sync-settings.png').write_bytes(base64.b64decode(http('GET',prefix+'/screenshot')))
+                invoke('configure_sync',{'enabled':False,'background':False})
+                check('native disconnect preserves translation',not invoke('get_sync')['enabled']and invoke('get_job')['status']=='success')
+                invoke('configure_sync',{'enabled':True,'background':False})
+                check('global clear requires native confirmation','error' in invoke('clear_sync_memory',{'confirmAllDevices':False},True))
+                invoke('clear_sync_memory',{'confirmAllDevices':True});invoke('sync_now')
+                check('native global clear converges',invoke('get_memory',{'query':'','offset':0})['total']==0)
+                invoke('revoke_sync_device',{'id':devices[0]['id']})
+                check('native self revocation stops sync',invoke('get_sync')['status']=='needs-auth')
+            # Fixed-command warm activation, then a cold CLI session. Synthetic text/local provider only.
+            clipboard_owner=subprocess.Popen([str(Path(a.xclip).resolve()),'-selection','clipboard','-in','-quiet'],stdin=subprocess.PIPE,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,env=env)
+            clipboard_owner.stdin.write(b'An Agent from clipboard.');clipboard_owner.stdin.close()
+            time.sleep(.15)
+            count=len(requests);old_revision=invoke('get_job')['revision']
+            subprocess.run([str(Path(a.binary).resolve()),'--translate-clipboard'],env=env,check=True,timeout=10,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+            wait(lambda:invoke('get_job')['revision']>old_revision and invoke('get_job')['status']=='success')
+            check('fixed command forwards exactly one clipboard job',invoke('get_job')['original']=='An Agent from clipboard.' and len(requests)==count+1)
+            # Empty clipboard errors must not call the provider.
+            clipboard_owner=subprocess.Popen([str(Path(a.xclip).resolve()),'-selection','clipboard','-in','-quiet'],stdin=subprocess.PIPE,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,env=env)
+            clipboard_owner.stdin.close();time.sleep(.15)
+            count=len(requests);old_revision=invoke('get_job')['revision']
+            subprocess.run([str(Path(a.binary).resolve()),'--translate-clipboard'],env=env,check=True,timeout=10,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+            wait(lambda:invoke('get_job')['revision']>old_revision and invoke('get_job')['status']=='error')
+            check('clipboard capture error sends no provider request',len(requests)==count)
+            clipboard_owner=subprocess.Popen([str(Path(a.xclip).resolve()),'-selection','clipboard','-in','-quiet'],stdin=subprocess.PIPE,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,env=env)
+            clipboard_owner.stdin.write(b'An Agent from clipboard.');clipboard_owner.stdin.close();time.sleep(.15)
+            http('DELETE','/session/'+session);session=None
+            time.sleep(.3)
+            # Hold the default key in this isolated display before startup: plugin init
+            # succeeds but registration must fail, without disabling clipboard commands.
+            x.XSetErrorHandler.argtypes=[ctypes.c_void_p];x.XSetErrorHandler.restype=ctypes.c_void_p
+            grab_errors=[]
+            error_callback=ctypes.CFUNCTYPE(ctypes.c_int,ctypes.c_void_p,ctypes.c_void_p)(lambda *_:grab_errors.append(True) or 0)
+            old_error_handler=x.XSetErrorHandler(ctypes.cast(error_callback,ctypes.c_void_p))
+            reserved_display=x.XOpenDisplay(None)
+            reserved_root=x.XDefaultRootWindow(reserved_display);reserved_key=x.XKeysymToKeycode(reserved_display,ord('Q'))
+            x.XGrabKey(reserved_display,reserved_key,5,reserved_root,1,1,1);x.XSync(reserved_display,0)
+            check('isolated fixture reserves startup key',not grab_errors)
+            session=http('POST' ,'/session',{'capabilities':{'alwaysMatch':{'browserName':'wry','tauri:options':{'application':str(Path(a.binary).resolve()),'args':['--translate-clipboard']}}}})['sessionId']
+            prefix='/session/'+session
+            wait(lambda:invoke('get_job')['status']=='success')
+            check('plugin initialization does not imply shortcut ready',invoke('get_shortcut_status')['capable'] and invoke('get_shortcut_status')['status']=='unavailable')
+            check('cold clipboard command captures before result',invoke('get_job')['original']=='An Agent from clipboard.' and invoke('get_job')['source']=='clipboard')
+            check('cold clipboard launch keeps main hidden',not invoke('plugin:window|is_visible',{'label':'main'}))
+            check('cold clipboard launch opens result popup',invoke('plugin:window|is_visible',{'label':'translation'}))
+            # WebKit's screenshot endpoint waits forever for a hidden main webview.
+            # Capture this isolated Xvfb root to include the visible result popup.
+            from PIL import ImageGrab
+            ImageGrab.grab().save(out/'native-result.png')
+            count=len(requests)
+            config_path.with_suffix('.recovery').write_text('settings recovery required\n')
+            subprocess.run([str(Path(a.binary).resolve()),'--translate-clipboard'],env=env,check=True,timeout=10,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+            wait(lambda:invoke('get_job')['status']=='error')
+            check('command rejection surfaces recovery error without model call',invoke('get_job')['error']['code']=='settings_recovery' and len(requests)==count and invoke('plugin:window|is_visible',{'label':'translation'}))
             (out/'result.json').write_text(json.dumps({'passed':len(results),'checks':results,'providerRequests':len(requests)},ensure_ascii=False,indent=2))
     finally:
         delay.set()
@@ -212,8 +323,16 @@ with tempfile.TemporaryDirectory(prefix='asa-native-e2e-') as directory:
         if driver and driver.poll() is None:
             os.killpg(driver.pid,signal.SIGTERM)
             driver.wait(timeout=5)
+        if reserved_display:
+            x.XCloseDisplay(reserved_display);x.XSetErrorHandler(old_error_handler)
+        if clipboard_owner and clipboard_owner.poll() is None:
+            clipboard_owner.terminate();clipboard_owner.wait(timeout=5)
         if selection_owner and selection_owner.poll() is None:
             selection_owner.terminate();selection_owner.wait(timeout=5)
         if 'wm' in locals() and wm.poll() is None:
             wm.terminate();wm.wait(timeout=5)
+        if tray_process and tray_process.poll() is None:
+            tray_process.terminate();tray_process.wait(timeout=5)
+        if sync_process and sync_process.poll() is None:
+            sync_process.terminate();sync_process.wait(timeout=5)
         server.shutdown()

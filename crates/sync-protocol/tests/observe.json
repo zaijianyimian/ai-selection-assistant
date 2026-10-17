@@ -1,0 +1,1 @@
+{"protocol":1,"workspaceId":"workspace-fixture","historyId":"history-fixture","operations":[{"id":"operation-fixture","generation":1,"action":{"type":"observe","term":{"original":"Agent","translation":"智能体","domain":"Agent","sense":"自主执行任务的系统","language":"English"},"event":{"id":"event-fixture","at":1,"source":"manual"},"incarnation":null,"tombstoneRevision":0}}]}

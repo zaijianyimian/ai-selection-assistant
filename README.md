@@ -8,7 +8,7 @@
 
 [Windows x64 v0.1.1 安装包、直接运行版与使用说明](https://github.com/zaijianyimian/ai-selection-assistant/releases/tag/v0.1.1)。安装版无需 Node.js、Rust 或 Visual Studio；需要系统 WebView2 Runtime，安装包会检查并按需安装。
 
-[Linux amd64 v0.2.0 DEB 与 SHA-256](https://github.com/zaijianyimian/ai-selection-assistant/releases/tag/v0.2.0)。本次是 Linux 检索与弹窗更新版；Windows 二进制仍使用上面的 v0.1.1。DEB 基于 Ubuntu 26.04 构建，最低 libc6 2.39，并要求包内声明的 WebKitGTK / GTK 等依赖；不适用于 Ubuntu 22.04 的预编译安装。
+[Linux amd64 v0.3.2 预发布：DEB、同步服务与 SHA-256](https://github.com/zaijianyimian/ai-selection-assistant/releases/tag/v0.3.2)。包含自托管多端同步、GNOME Wayland 系统快捷键和下拉框显示修复；真实 Wayland 按键与重新登录验收仍待完成。Windows 二进制仍使用上面的 v0.1.1。DEB 基于 Ubuntu 26.04 构建，最低 libc6 2.39，并要求包内声明的 WebKitGTK / GTK 等依赖；不适用于 Ubuntu 22.04 的预编译安装。
 
 升级前请从托盘退出旧实例。发布附件含 SHA-256 校验值和第三方许可；安装包未签名。Linux 可安装 DEB，或按下文从源码构建。实际验证范围见 [验证记录](docs/verification.md)。
 
@@ -114,9 +114,9 @@ npm run tauri build -- --bundles appimage
 DEB 脚本从最终 ELF 和 dpkg-shlibdeps 元数据生成版本依赖，并对成品再次验包；缺少工具/元数据会失败。`python3`、`dpkg-dev`、`binutils` 只是构建和验证工具，不是桌面应用运行依赖。单独验包：
 
 ```bash
-bash scripts/verify-linux-deb.sh '/path/to/AI Selection Assistant_0.2.0_amd64.deb'
+bash scripts/verify-linux-deb.sh '/path/to/AI Selection Assistant_0.3.2_amd64.deb'
 # 安装（apt 自动解析依赖）
-sudo apt install ./ai-selection-assistant_0.2.0_amd64.deb
+sudo apt install ./ai-selection-assistant_0.3.2_amd64.deb
 ```
 
 输出位于 `src-tauri/target/release/bundle/`。同一份 `node_modules` 不宜跨 Windows / WSL 共用；正常开发应在各自系统的独立工作目录执行 `npm ci`。在 WSL 中建议把项目放在 Linux 文件系统以改善编译性能；显示窗口需要 WSLg。
@@ -125,10 +125,10 @@ sudo apt install ./ai-selection-assistant_0.2.0_amd64.deb
 
 - **X11**：选择文字后触发快捷键，先读 PRIMARY；为空时回退剪贴板，并显示来源提示。
 - **Wayland**：先 **Ctrl+C** 复制，再按已可用的快捷键，或点击应用 / 托盘中的 **翻译剪贴板**。应用使用 `wl-paste` 读取、`wl-copy` 复制译文。
-- 全局快捷键取决于合成器及 XWayland 支持。若无法注册，可在系统设置里配置自定义快捷键，执行已安装的程序：
+- **GNOME Wayland**：安装 DEB 后，在「偏好设置 → 翻译偏好」保存组合键，再点击「启用系统快捷键」。使用固定命令，退出应用后仍可触发；普通启动只检查，不重复添加或覆盖系统修改。其他 Wayland 桌面可手动添加以下命令：
 
 ```bash
-/absolute/path/to/ai-selection-assistant --translate-clipboard
+/usr/bin/ai-selection-assistant --translate-clipboard
 ```
 
 应用通过 single-instance 插件把第二次启动转交给正在运行的实例。仍需先手动复制文字。GNOME 如未显示托盘，可安装 AppIndicator 扩展；即使没有托盘，再次启动程序也可重新打开主窗口。
@@ -193,7 +193,7 @@ DeepSeek 配置示例：Base URL `https://api.deepseek.com/v1`，Model `deepseek
 - 可选术语记忆位于 Tauri app data 目录的 `memory.sqlite3`：Windows 通常为 `%APPDATA%\io.github.ai-selection-assistant\`，Linux 为 `~/.local/share/io.github.ai-selection-assistant/`（以系统 XDG 配置为准）。其中没有 API Key；清空会删除术语、出现、反馈与画像内容，保留内部递增 ID 和调度时间以防旧请求及重试。
 - Windows 自动模式可以恢复原有**文本**，不能完整恢复 HTML、图片等多格式剪贴板。纯图片 / 文件剪贴板会提示先手动复制。要避免任何模拟复制与恢复操作，使用 **仅剪贴板**模式。
 - 自动模式不会在模拟复制未产生新剪贴板事件时翻译旧内容。权限较高的目标应用、受保护 PDF、禁用复制的网页可能拒绝读取，应手动复制或输入。
-- 术语准确性与模型相关，提示词约束范围与普通词过滤，但没有独立事实检索。鼠标附近定位、流式输出、历史记录和自动更新未加入本 MVP。
+- 术语准确性与模型相关，提示词约束范围与普通词过滤，但没有独立事实检索。X11 已支持鼠标附近定位；新版 Windows 二进制未构建/实测，GNOME Wayland 的真实按键和重新登录仍待验收。流式输出、原文历史记录和自动更新尚未提供。
 
 ## 目录
 
@@ -252,3 +252,11 @@ X11 在快捷键触发、窗口失焦前读取鼠标位置，近似划选结束�
 Wayland 由合成器控制全局位置，应用不会强行定位；手动拖动浮窗后，同次运行隐藏再打开保留合成器管理的位置。不能承诺跨重启恢复坐标。
 
 最终 DEB 必须小于 **30,000,000 字节（30 MB）**，构建和成品验包都会检查，达线或超线失败。桌面运行不需要模型、Python 或 WebDriver；Python/dpkg/WebDriver 仅用于开发、打包和验收。
+
+## 多端同步（0.3.0）
+
+可选连接自托管 VPS 服务，同步精简术语、出现记录、熟悉程度，以及外观、目标语言、解释风格。默认关闭，不上传模型 Key、原文、完整译文或画像。支持离线队列、逐字段冲突、设备撤销、删除/清空传播与一致性备份恢复。
+
+部署见 [自托管手册](docs/self-hosted-sync.md)，协议见 [同步协议](docs/sync-protocol.md)，客户端可靠性与验收见 [客户端同步](docs/sync-client.md)。服务器独立交付，不进入桌面安装包。
+
+Ubuntu GNOME Wayland 的持久系统快捷键、首次启用和恢复方式见 [Linux 快捷键](docs/linux-shortcuts.md)。升级后需退出旧进程再启动新版本。

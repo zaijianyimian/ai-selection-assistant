@@ -1,6 +1,6 @@
 [package]
 name = "ai-selection-assistant"
-version = "0.2.0"
+version = "0.3.2"
 description = "Local-first AI selection translation assistant"
 edition = "2021"
 rust-version = "1.90"
@@ -14,6 +14,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+asa-sync-protocol = { path = "../crates/sync-protocol" }
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-single-instance = "2"
@@ -24,7 +25,7 @@ tokio = { version = "1", features = ["sync", "time", "process", "io-util", "macr
 arboard = { version = "3.6", default-features = false, features = ["wayland-data-control"] }
 url = "2"
 zeroize = "1"
-rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled", "backup"] }
 uuid = { version = "1", features = ["v4"] }
 
 [target.'cfg(windows)'.dependencies]
@@ -33,7 +34,10 @@ clipboard-win = "5.4"
 windows-sys = { version = "0.61", features = ["Win32_UI_Input_KeyboardAndMouse", "Win32_System_DataExchange", "Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+glib = "0.18"
 keyring = { version = "3.6", features = ["sync-secret-service", "crypto-rust"] }
 
 [dev-dependencies]
+axum = "0.8"
+asa-sync-server = { path = "../server" }
 tempfile = "3"

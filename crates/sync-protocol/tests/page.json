@@ -1,0 +1,29 @@
+{
+  "context": {
+    "protocol": 1,
+    "workspaceId": "workspace-1",
+    "historyId": "history-1",
+    "memoryGeneration": 1,
+    "revision": 7
+  },
+  "stream": "memory",
+  "until": 7,
+  "nextCursor": 7,
+  "hasMore": false,
+  "changes": [
+    {
+      "revision": 6,
+      "change": {
+        "type": "redacted"
+      }
+    },
+    {
+      "revision": 7,
+      "change": {
+        "type": "deleted",
+        "key": "t1:fixture",
+        "incarnation": "inc-1"
+      }
+    }
+  ]
+}

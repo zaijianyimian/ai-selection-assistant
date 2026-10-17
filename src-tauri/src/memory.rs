@@ -97,7 +97,7 @@ fn set_meta(db: &Connection, key: &str, value: i64) -> AppResult<()> {
     .map_err(db_error)?;
     Ok(())
 }
-fn invalidate(db: &Connection) -> AppResult<()> {
+pub(crate) fn invalidate(db: &Connection) -> AppResult<()> {
     set_meta(db, "epoch", meta(db, "epoch")? + 1)?;
     db.execute("DELETE FROM profiles", []).map_err(db_error)?;
     set_meta(db, "active", 0)?;
@@ -116,7 +116,7 @@ fn init(db: &Connection) -> AppResult<()> {
     let version: i64 = db
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .map_err(db_error)?;
-    if version > 1 {
+    if version > 2 {
         return Err(AppError::new(
             "memory_version",
             "术语数据库版本较新，请使用新版应用打开。",
@@ -137,7 +137,11 @@ fn init(db: &Connection) -> AppResult<()> {
         UNIQUE(job,term_id,kind));
       CREATE INDEX IF NOT EXISTS events_term ON events(term_id,id);
       CREATE TABLE IF NOT EXISTS profiles(id INTEGER PRIMARY KEY AUTOINCREMENT,at INTEGER NOT NULL,content TEXT NOT NULL);
-      PRAGMA user_version=1;").map_err(db_error)?;
+      ").map_err(db_error)?;
+    if version == 0 {
+        db.pragma_update(None, "user_version", 1)
+            .map_err(db_error)?;
+    }
     crate::search::init(db)
 }
 fn read_term(db: &Connection, id: i64, cursor: i64) -> AppResult<StoredTerm> {
@@ -183,15 +187,48 @@ impl Memory {
     pub async fn epoch(&self) -> AppResult<i64> {
         self.call(|db| meta(db, "epoch")).await
     }
-    pub async fn commit_settings(
+    pub async fn prepare_sync_preferences(
+        &self,
+        values: std::collections::BTreeMap<String, String>,
+    ) -> AppResult<()> {
+        self.call(move |db| {
+            if let Some(mut d) = crate::sync::storage::load(db)? {
+                d.intent = Some(values);
+                crate::sync::storage::save(db, &d)?;
+            }
+            Ok(())
+        })
+        .await
+    }
+    pub async fn commit_synced_settings(
         &self,
         publish: impl FnOnce() -> AppResult<()> + Send + 'static,
+        values: std::collections::BTreeMap<String, String>,
+        invalidated: bool,
+        memory_allowed: bool,
     ) -> AppResult<()> {
         self.call(move |db| {
             let tx = db.transaction().map_err(db_error)?;
-            invalidate(&tx)?;
+            if invalidated {
+                invalidate(&tx)?;
+            }
             publish()?;
+            if let Some(mut d) = crate::sync::storage::load(&tx)? {
+                d.memory_allowed = memory_allowed;
+                crate::sync::storage::save(&tx, &d)?;
+            }
+            crate::sync::storage::preferences(&tx, &values)?;
             tx.commit().map_err(db_error)
+        })
+        .await
+    }
+    pub async fn abandon_sync_preferences(&self) -> AppResult<()> {
+        self.call(|db| {
+            if let Some(mut d) = crate::sync::storage::load(db)? {
+                d.intent = None;
+                crate::sync::storage::save(db, &d)?;
+            }
+            Ok(())
         })
         .await
     }
@@ -223,6 +260,7 @@ impl Memory {
                 tx.execute("INSERT OR IGNORE INTO events(job,term_id,at,source,kind) VALUES(?,?,?,?,'translation')",params![job,id,now(),source]).map_err(db_error)?;
                 ids.push(id);
             }
+            crate::sync::storage::observed(&tx)?;
             tx.commit().map_err(db_error)?; Ok(ids)
         }).await
     }
@@ -284,13 +322,15 @@ impl Memory {
             return Err(AppError::new("feedback", "熟悉程度无效。"));
         }
         self.call(move|db| {
-            db.execute("INSERT INTO events(job,term_id,at,source,kind,value) VALUES(?,?,?,'manual','feedback',?)",params![uuid::Uuid::new_v4().to_string(),id,now(),value]).map_err(db_error)?;Ok(())
+            let tx=db.transaction().map_err(db_error)?;
+            tx.execute("INSERT INTO events(job,term_id,at,source,kind,value) VALUES(?,?,?,'manual','feedback',?)",params![uuid::Uuid::new_v4().to_string(),id,now(),value]).map_err(db_error)?;crate::sync::storage::feedback(&tx,id,&value)?;tx.commit().map_err(db_error)
         }).await
     }
     pub async fn delete(&self, id: Option<i64>) -> AppResult<()> {
         self.call(move |db| {
             let tx = db.transaction().map_err(db_error)?;
             invalidate(&tx)?;
+            crate::sync::storage::deleted(&tx, id)?;
             match id {
                 Some(id) => {
                     tx.execute("DELETE FROM terms WHERE id=?", [id])

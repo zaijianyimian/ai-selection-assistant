@@ -1,13 +1,17 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, onMounted } from 'vue'
 import { useAssistant } from '../stores/assistant'
 import { command } from '../native'
 import { errorMessage } from '../types'
 import Icon from './Icon.vue'
 import TermCard from './TermCard.vue'
+import { useShortcuts, shortcutLabels } from '../stores/shortcuts'
 
 defineProps<{ popup: boolean }>()
 const store = useAssistant()
+const shortcuts = useShortcuts()
+onMounted(() => { void shortcuts.refresh() })
+const wayland = computed(() => store.platform.startsWith('Wayland') || ['gnome', 'manual'].includes(shortcuts.state?.backend ?? ''))
 const copied = ref(false)
 const copyError = ref('')
 const targetLanguage = computed(() => store.job.requestOptions?.targetLanguage ?? (store.job.result ? '目标语言未知' : store.settings.targetLanguage))
@@ -27,14 +31,14 @@ async function copy() {
 <template>
   <section class="translation-view" :class="{ compact: popup }">
     <div v-if="!popup" class="page-heading"><div><div class="eyebrow">YOUR WORDS, UNDERSTOOD</div><h1>读懂每一段文字<span>。</span></h1><p>即刻翻译，理解藏在文字里的专业知识。</p></div><span class="subtle-badge"><span class="status-dot"></span> 本地客户端</span></div>
-    <div v-if="!popup" class="shortcut-strip"><span class="shortcut-icon"><Icon name="keyboard" /></span><div><strong>选中文字，唤起翻译</strong><p>在浏览器、编辑器或阅读器中，按下全局快捷键。</p></div><div class="key-combo"><kbd v-for="key in store.settings.shortcut.split('+')" :key="key">{{ key }}</kbd></div></div>
+    <div v-if="!popup" class="shortcut-strip"><span class="shortcut-icon"><Icon name="keyboard" /></span><div><strong>{{ wayland ? '先复制文字，再唤起翻译' : '选中文字，唤起翻译' }}</strong><p v-if="wayland">先 Ctrl+C；{{ shortcuts.state ? shortcutLabels[shortcuts.state.status] : '请在设置中检查系统快捷键' }}。{{ shortcuts.state?.message }}</p><p v-else>在浏览器、编辑器或阅读器中，按下已注册的全局快捷键。</p></div><div class="key-combo"><kbd v-for="key in (shortcuts.state?.observed || store.settings.shortcut).split('+')" :key="key">{{ key }}</kbd></div></div>
 
     <p v-if="popup && store.platform.startsWith('Wayland')" class="field-help placement-hint">Wayland 不支持自动贴近选区；可拖动悬浮窗，本次运行隐藏后再打开会保留手动位置。</p>
     <div class="translation-grid">
       <section class="text-panel input-panel">
         <div class="panel-heading"><span><span class="mini-label">01</span>原文</span><span class="muted text-small">{{ store.job.result?.sourceLanguage || '自动检测语言' }}</span></div>
         <label for="source-text" class="sr-only">输入要翻译的文字</label>
-        <textarea id="source-text" v-model="store.input" placeholder="粘贴或输入想要理解的文字…&#10;&#10;也可以选中其他应用中的文字，使用快捷键开始翻译。" :disabled="store.busy" @keydown.ctrl.enter.prevent="store.translate()" />
+        <textarea id="source-text" v-model="store.input" placeholder="粘贴或输入想要理解的文字…&#10;&#10;Wayland 请先 Ctrl+C 复制，再使用系统快捷键翻译。" :disabled="store.busy" @keydown.ctrl.enter.prevent="store.translate()" />
         <div class="input-meta"><span :class="{ danger: count > 16000 }">{{ count.toLocaleString() }} / 16,000</span><button class="text-button" :disabled="store.busy || !store.input" @click="store.input = ''">清空</button></div>
         <div class="input-actions"><button class="button secondary" :disabled="store.busy || !store.ready" @click="store.translate(true)"><Icon name="clipboard" :size="16" />翻译剪贴板</button><button class="button primary" :disabled="store.busy || !store.ready || !store.input.trim() || count > 16000" @click="store.translate()"><span v-if="store.busy" class="spinner"></span><Icon v-else name="spark" :size="16" />{{ store.busy ? '处理中' : '开始翻译' }}</button></div>
       </section>

@@ -4,16 +4,19 @@ import { useMemory } from '../stores/memory'
 import { useAssistant } from '../stores/assistant'
 import type { Familiarity } from '../types'
 import Icon from './Icon.vue'
+import { useSync } from '../stores/sync'
 const memory = useMemory()
+const sync = useSync()
+const allDevices = ref(false)
 const assistant = useAssistant()
 const deleteId = ref<number | null | undefined>(undefined)
 const active = computed(() => memory.view.versions.find(v => v.id === memory.view.activeVersion))
 const date = (at: number) => at ? new Date(at * 1000).toLocaleString() : '尚未运行'
-onMounted(() => { void memory.initialize() })
-onUnmounted(() => memory.dispose())
+onMounted(() => { void memory.initialize(); void sync.initialize() })
+onUnmounted(() => { memory.dispose(); sync.dispose() })
 async function search() { await memory.search() }
 async function page(direction: number) { memory.offset = Math.max(0, memory.offset + direction * 30); await memory.refresh() }
-async function remove() { const id = deleteId.value; deleteId.value = undefined; if (id !== undefined) await memory.act('delete_memory', { id }) }
+async function remove() { const id = deleteId.value; deleteId.value = undefined; if (id === null && sync.view.enabled && allDevices.value) { try { await sync.act('clear_sync_memory', { confirmAllDevices: true }); await memory.refresh() } catch { /* store exposes the error */ } } else if (id !== undefined) await memory.act('delete_memory', { id }) }
 </script>
 
 <template>
@@ -32,8 +35,9 @@ async function remove() { const id = deleteId.value; deleteId.value = undefined;
     <form class="memory-search" @submit.prevent="search"><label for="term-search-mode" class="sr-only">搜索模式</label><select id="term-search-mode" v-model="memory.mode" @change="search"><option value="keyword">关键词</option><option value="fuzzy">模糊相关</option></select><label for="term-search" class="sr-only">搜索术语</label><input id="term-search" v-model="memory.query" placeholder="搜索词条、译名、领域或词义" maxlength="200" /><button class="button secondary" type="submit">{{ memory.searching ? '搜索中…' : '搜索' }}</button><button class="text-button" type="button" @click="memory.refresh">刷新</button></form>
     <p class="field-help">本地词法检索，不下载模型、不联网。关键词用空格分隔，最多 8 个；模糊相关结合全文索引与词形匹配，最多合并 1500 个候选，不是向量语义理解。</p>
     <p v-if="memory.searching" role="status">正在搜索本地术语…</p>
+    <div v-if="sync.error" class="inline-message error" role="alert">{{ sync.error }}</div>
     <div v-if="memory.error" class="inline-message error" role="alert">{{ memory.error }}</div>
-    <div v-if="deleteId !== undefined" class="inline-message warning" role="alert"><span>{{ deleteId === null ? '确认清空所有术语和反馈？' : '确认删除此术语及其出现记录？' }}相关分析画像也将清除，无法撤销。</span><button class="button secondary" @click="deleteId = undefined">取消</button><button class="button primary" @click="remove">确认删除</button></div>
+    <div v-if="deleteId !== undefined" class="inline-message warning" role="alert"><span>{{ sync.view.enabled ? (deleteId === null ? '清空所有设备的术语和反馈？旧设备离线变更也会作废；偏好不受影响。' : '删除此术语及其出现记录，并同步到所有设备？') : '删除本机记忆？重新连接后服务器数据可能重新出现。' }}相关分析画像也将清除，无法撤销。</span><button class="button secondary" @click="deleteId = undefined">取消</button><label v-if="deleteId === null && sync.view.enabled" class="checkbox-label"><input v-model="allDevices" type="checkbox" />确认清空所有设备</label><button class="button primary" :disabled="deleteId === null && sync.view.enabled && !allDevices" @click="remove">确认删除</button><p v-if="sync.view.enabled">仅清空本机：先在偏好设置中断开同步。</p></div>
     <div class="term-grid"><article v-for="term in memory.view.terms" :key="term.id" class="term-card"><div class="memory-term-heading"><h3>{{ term.original }} <small class="muted">#{{ term.id }}</small></h3><span class="domain-tag">{{ term.domain }}</span></div><strong>{{ term.translation }}</strong><p>{{ term.senseSummary }}</p><p class="field-help">{{ term.count }} 次出现 · {{ term.language }} · {{ date(term.lastSeen) }}</p><div class="memory-actions"><label :for="`familiarity-${term.id}`">熟悉程度</label><select :id="`familiarity-${term.id}`" :value="term.familiarity" :disabled="memory.working" @change="memory.feedback(term.id, ($event.target as HTMLSelectElement).value as Familiarity)"><option value="unknown">未标记</option><option value="learning">正在学习</option><option value="known">已熟悉</option></select><button class="text-button danger" :disabled="memory.working" @click="deleteId = term.id">删除</button></div></article></div>
     <p v-if="!memory.view.terms.length" class="terms-empty">暂无匹配术语。开启记忆后，完成一次含专业术语的翻译即可积累。</p>
     <div class="memory-actions pagination"><button class="button secondary" :disabled="memory.offset === 0" @click="page(-1)">上一页</button><span>{{ Math.floor(memory.offset / 30) + 1 }} / {{ Math.max(1, Math.ceil(memory.view.total / 30)) }}</span><button class="button secondary" :disabled="memory.offset + 30 >= memory.view.total" @click="page(1)">下一页</button></div>

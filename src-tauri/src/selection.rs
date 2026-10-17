@@ -257,50 +257,57 @@ mod linux {
     use std::{process::Stdio, time::Duration};
     use tokio::io::AsyncReadExt;
 
+    async fn wayland_clipboard(
+        clipboard_only: bool,
+        program: &std::ffi::OsStr,
+    ) -> AppResult<Selection> {
+        let operation = async {
+            let mut child = tokio::process::Command::new(program)
+                .args(["--no-newline", "--type", "text"])
+                .stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true)
+                .spawn().map_err(|_| AppError::new("wayland_clipboard", "Wayland 需要 wl-clipboard。请安装：sudo apt install wl-clipboard，然后 Ctrl+C 复制文字再翻译。"))?;
+            let stdout = child.stdout.take().ok_or_else(clipboard_error)?;
+            let mut bytes = Vec::new();
+            stdout
+                .take(128_001)
+                .read_to_end(&mut bytes)
+                .await
+                .map_err(|_| clipboard_error())?;
+            if bytes.len() > 128_000 {
+                return Err(AppError::new(
+                    "input_too_long",
+                    "剪贴板内容过大，请缩小选区。",
+                ));
+            }
+            if !child.wait().await.map_err(|_| clipboard_error())?.success() {
+                return Err(AppError::new(
+                    "empty_selection",
+                    "未读到 Wayland 剪贴板文字。请先 Ctrl+C，再点击「翻译剪贴板」。",
+                ));
+            }
+            let text = String::from_utf8(bytes).map_err(|_| clipboard_error())?;
+            Ok(Selection {
+                text: validate_input(&text)?,
+                source: "wayland-clipboard".into(),
+                warning: if clipboard_only {
+                    None
+                } else {
+                    Some("Wayland 使用已复制的剪贴板文字；请确认已先按 Ctrl+C。".into())
+                },
+            })
+        };
+        return tokio::time::timeout(Duration::from_secs(3), operation)
+            .await
+            .map_err(|_| {
+                AppError::new("clipboard_timeout", "剪贴板读取超时，请重新复制后重试。")
+            })?;
+    }
+
     pub async fn capture(clipboard_only: bool) -> AppResult<Selection> {
         let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some()
             || std::env::var("XDG_SESSION_TYPE").is_ok_and(|s| s == "wayland");
         if wayland {
-            let operation = async {
-                let mut child = tokio::process::Command::new("wl-paste")
-                    .args(["--no-newline", "--type", "text"])
-                    .stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true)
-                    .spawn().map_err(|_| AppError::new("wayland_clipboard", "Wayland 需要 wl-clipboard。请安装：sudo apt install wl-clipboard，然后 Ctrl+C 复制文字再翻译。"))?;
-                let stdout = child.stdout.take().ok_or_else(clipboard_error)?;
-                let mut bytes = Vec::new();
-                stdout
-                    .take(128_001)
-                    .read_to_end(&mut bytes)
-                    .await
-                    .map_err(|_| clipboard_error())?;
-                if bytes.len() > 128_000 {
-                    return Err(AppError::new(
-                        "input_too_long",
-                        "剪贴板内容过大，请缩小选区。",
-                    ));
-                }
-                if !child.wait().await.map_err(|_| clipboard_error())?.success() {
-                    return Err(AppError::new(
-                        "empty_selection",
-                        "未读到 Wayland 剪贴板文字。请先 Ctrl+C，再点击「翻译剪贴板」。",
-                    ));
-                }
-                let text = String::from_utf8(bytes).map_err(|_| clipboard_error())?;
-                Ok(Selection {
-                    text: validate_input(&text)?,
-                    source: "wayland-clipboard".into(),
-                    warning: if clipboard_only {
-                        None
-                    } else {
-                        Some("Wayland 使用已复制的剪贴板文字；请确认已先按 Ctrl+C。".into())
-                    },
-                })
-            };
-            return tokio::time::timeout(Duration::from_secs(3), operation)
-                .await
-                .map_err(|_| {
-                    AppError::new("clipboard_timeout", "剪贴板读取超时，请重新复制后重试。")
-                })?;
+            return wayland_clipboard(clipboard_only, std::ffi::OsStr::new("wl-paste")).await;
         }
         let task = tauri::async_runtime::spawn_blocking(move || {
             use arboard::{GetExtLinux, LinuxClipboardKind};
@@ -345,6 +352,34 @@ mod linux {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        #[tokio::test]
+        async fn wayland_capture_errors_and_text_do_not_require_a_desktop_or_global_env_changes() {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = tempfile::tempdir().unwrap();
+            let program = dir.path().join("wl-paste-fixture");
+            for (body, success) in [
+                ("printf 'Synthetic clipboard text'", true),
+                ("exit 1", false),
+                ("printf ''", false),
+                ("printf '\\377'", false),
+            ] {
+                std::fs::write(&program, format!("#!/bin/sh\n{body}\n")).unwrap();
+                std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+                let result = wayland_clipboard(true, program.as_os_str()).await;
+                assert_eq!(result.is_ok(), success);
+                if let Ok(selection) = result {
+                    assert_eq!(selection.text, "Synthetic clipboard text");
+                    assert_eq!(selection.source, "wayland-clipboard");
+                    assert!(selection.warning.is_none());
+                }
+            }
+            assert!(
+                wayland_clipboard(true, dir.path().join("missing").as_os_str())
+                    .await
+                    .is_err()
+            );
+        }
 
         #[tokio::test]
         #[ignore = "Requires an isolated Xvfb display; see docs/verification.md"]

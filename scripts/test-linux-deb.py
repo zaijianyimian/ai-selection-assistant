@@ -27,6 +27,22 @@ with tempfile.TemporaryDirectory(prefix='asa-negative-deb-') as directory:
         assert result.returncode!=0,(name,result.stdout)
         assert 'libc6' in result.stderr,result.stderr
         checks.append(name+' libc6 constraint is rejected')
+    for name in ['missing-entry','missing-gsettings-dependency','invalid-desktop-entry','unsafe-postinst']:
+        work=base/name
+        subprocess.run(['dpkg-deb','-R',str(package),str(work)],check=True)
+        if name=='missing-entry':(work/'usr/bin/ai-selection-assistant').unlink()
+        elif name=='missing-gsettings-dependency':
+            control=work/'DEBIAN/control';control.write_text(control.read_text().replace('libglib2.0-bin, ',''))
+        elif name=='invalid-desktop-entry':
+            entry=work/'usr/share/applications/AI Selection Assistant.desktop'
+            entry.write_text(re.sub(r'^Exec=.*$','Exec=/nonexistent',entry.read_text(),flags=re.M))
+        else:
+            entry=work/'DEBIAN/postinst';entry.write_text('#!/bin/sh\ngsettings set example value true\n');entry.chmod(0o755)
+        candidate=base/(name+'.deb')
+        subprocess.run(['dpkg-deb','--build',str(work),str(candidate)],check=True,stdout=subprocess.DEVNULL)
+        result=subprocess.run([sys.executable,str(script),'verify',str(candidate)],capture_output=True,text=True)
+        assert result.returncode!=0,(name,result.stdout)
+        checks.append(name+' is rejected')
     result=subprocess.run([sys.executable,str(script),'config',str(package)],env={**os.environ,'PATH':'/nonexistent'},capture_output=True,text=True)
     assert result.returncode!=0 and 'missing' in result.stderr
     checks.append('missing tool fails closed')

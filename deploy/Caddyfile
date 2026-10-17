@@ -1,0 +1,9 @@
+{
+  email {$ACME_EMAIL}
+}
+{$SYNC_DOMAIN} {
+  request_body {
+    max_size 1MB
+  }
+  reverse_proxy sync:8080
+}

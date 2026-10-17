@@ -4,8 +4,12 @@ import { useAssistant } from '../stores/assistant'
 import { command } from '../native'
 import { errorMessage, settingsKey, type Settings, type ConnectionTest } from '../types'
 import Icon from './Icon.vue'
+import SyncSettings from './SyncSettings.vue'
+import ShortcutSettings from './ShortcutSettings.vue'
+import { useShortcuts } from '../stores/shortcuts'
 
 const store = useAssistant()
+const shortcuts = useShortcuts()
 const form = reactive({ ...store.settings })
 const apiKey = ref('')
 const removeKey = ref(false)
@@ -36,6 +40,7 @@ watch(() => form.rememberTerms, enabled => { if (!enabled) form.autoAnalyze = fa
 onUnmounted(() => { apiKey.value = '' })
 
 async function save() {
+  if (shortcuts.pending) return
   working.value = 'save'; message.value = ''; failure.value = ''
   const externalAtSubmit = externalVersion
   try {
@@ -74,7 +79,8 @@ async function test() {
 
       <section class="settings-card"><div class="settings-card-title"><Icon name="keyboard" /><div><h2>翻译偏好</h2><p>快捷键、语言和阅读体验</p></div></div>
         <div class="form-row"><div class="field"><label for="shortcut">全局快捷键</label><input id="shortcut" v-model="form.shortcut" placeholder="Ctrl+Shift+Q" :disabled="!!working" required /><p class="field-help">如 Ctrl+Shift+Q 或 Alt+Shift+T。</p></div><div class="field"><label for="capture-mode">文字获取方式</label><select id="capture-mode" v-model="form.captureMode" :disabled="!!working"><option value="auto">自动选区 · 按系统选择</option><option value="clipboard">仅剪贴板 · 先手动复制</option></select></div></div>
-        <div class="field-help capture-help">Windows：自动模式模拟 Ctrl+C，并尽力恢复原剪贴板文本；富文本格式无法完整恢复。X11：优先 PRIMARY 选区。Wayland：始终先 Ctrl+C 复制后翻译；若全局快捷键不可用，使用应用或托盘中的「翻译剪贴板」。</div>
+        <ShortcutSettings :draft-shortcut="form.shortcut" :working="!!working" />
+        <div class="field-help capture-help">Windows：自动模式模拟 Ctrl+C，并尽力恢复原剪贴板文本；富文本格式无法完整恢复。X11：优先 PRIMARY 选区。Wayland：始终先 Ctrl+C 复制后翻译；可启用系统快捷键，或使用应用与托盘中的「翻译剪贴板」。</div>
         <div class="form-row"><div class="field"><label for="target-language">翻译为</label><select id="target-language" v-model="form.targetLanguage" :disabled="!!working"><option>简体中文</option><option>English</option><option>日本語</option></select></div><div class="field"><label for="theme">外观</label><select id="theme" v-model="form.theme" :disabled="!!working"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></div></div>
         <label class="toggle-row" for="explain-terms"><div><strong>专业术语解释</strong><p>理解 Java、JVM、AI、数据库等领域的术语；跳过普通词汇。</p></div><input id="explain-terms" v-model="form.explainTerms" type="checkbox" role="switch" :disabled="!!working" /></label>
       </section>
@@ -86,7 +92,8 @@ async function test() {
         <p class="field-help">出现频率只用于主题分析，不代表你已经掌握。已保存的术语可在「术语记忆」中搜索、反馈、删除和清空。更改记忆或自动分析开关会使现有画像失效，避免旧请求写回；已有术语保留。</p>
       </section>
       <div v-if="failure" class="inline-message error" role="alert">{{ failure }}</div><div v-if="message" class="inline-message success" role="status">{{ message }}</div>
-      <div class="save-bar"><span><Icon name="shield" :size="15" />API Key 由系统安全凭据存储保护</span><button class="button primary" type="submit" :disabled="!!working || !store.ready"><span v-if="working === 'save'" class="spinner"></span><Icon v-else name="check" :size="16" />{{ working === 'save' ? '正在保存…' : '保存设置' }}</button></div>
+      <div class="save-bar"><span><Icon name="shield" :size="15" />API Key 由系统安全凭据存储保护</span><button class="button primary" type="submit" :disabled="!!working || shortcuts.pending || !store.ready"><span v-if="working === 'save'" class="spinner"></span><Icon v-else name="check" :size="16" />{{ working === 'save' ? '正在保存…' : '保存设置' }}</button></div>
     </form>
+    <SyncSettings />
   </section>
 </template>

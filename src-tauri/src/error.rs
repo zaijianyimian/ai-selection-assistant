@@ -5,6 +5,8 @@ use serde::Serialize;
 pub struct AppError {
     pub code: String,
     pub message: String,
+    #[serde(skip)]
+    pub retry_after: Option<u64>,
 }
 
 impl AppError {
@@ -12,6 +14,7 @@ impl AppError {
         Self {
             code: code.into(),
             message: message.into(),
+            retry_after: None,
         }
     }
 }

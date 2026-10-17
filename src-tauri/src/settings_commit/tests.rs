@@ -436,3 +436,218 @@ async fn restart_recovery_compares_against_original_switches_after_file_restore_
     assert_eq!(view.total, 1);
     assert!(ensure_ready(&path, &restarted).is_ok());
 }
+
+#[tokio::test]
+async fn sync_preference_commit_compensates_and_crash_intent_contains_only_allowlist() {
+    for fault in ["publish", "memory_commit", "none"] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let db = populated(&dir.path().join("memory.sqlite3")).await;
+        db.call(|db| {
+            crate::sync::storage::migrate(db)?;
+            let mut d = crate::sync::storage::load(db)?.unwrap();
+            d.enabled = true;
+            d.binding = "fixture-binding".into();
+            d.context = Some(asa_sync_protocol::Context {
+                protocol: 1,
+                workspace_id: "workspace".into(),
+                history_id: "history".into(),
+                memory_generation: 1,
+                revision: 0,
+            });
+            crate::sync::storage::save(db, &d)
+        })
+        .await
+        .unwrap();
+        let old = old_settings();
+        let mut next = old.clone();
+        next.theme = "dark".into();
+        settings::persist(&path, &old).unwrap();
+        let fake = Fake::with_faults(if fault == "none" { vec![] } else { vec![fault] });
+        let result = commit(
+            &path,
+            &old,
+            &next,
+            None,
+            false,
+            Some(db.clone()),
+            fake.clone(),
+            &AtomicBool::new(false),
+        )
+        .await;
+        let d = db
+            .call(|db| Ok(crate::sync::storage::load(db)?.unwrap()))
+            .await
+            .unwrap();
+        assert!(d.intent.is_none());
+        if fault == "none" {
+            assert!(result.is_ok());
+            assert!(d.queue.iter().any(|p|matches!(&p.op.action,asa_sync_protocol::Action::Preference{field:asa_sync_protocol::Preference::Theme,value,..}if value=="dark")));
+            assert_eq!(settings::load(&path).unwrap().theme, "dark");
+        } else {
+            assert!(result.is_err());
+            assert!(d.queue.is_empty());
+            assert_eq!(settings::load(&path).unwrap(), old);
+        }
+        assert_eq!(*fake.key.lock().unwrap(), Some("fixture-old".into()));
+    }
+}
+
+#[cfg(target_os = "linux")]
+struct DesktopServices {
+    vault: Arc<Fake>,
+    desktop: crate::shortcut::gnome::tests::Fake,
+}
+#[cfg(target_os = "linux")]
+impl Services for DesktopServices {
+    fn checkpoint(&self, name: &str) -> AppResult<()> {
+        self.vault.checkpoint(name)
+    }
+    fn read_key(&self) -> AppResult<Option<Zeroizing<String>>> {
+        self.vault.read_key()
+    }
+    fn write_key(&self, key: Option<&str>) -> AppResult<()> {
+        self.vault.write_key(key)
+    }
+    fn register(&self, _: &str) -> AppResult<()> {
+        panic!("managed change must not register native keys")
+    }
+    fn unregister(&self, _: &str) -> AppResult<()> {
+        panic!("managed change must not retire the updated path")
+    }
+    fn prepare_shortcut(&self, _: &str, next: &str) -> AppResult<Option<serde_json::Value>> {
+        Ok(Some(
+            serde_json::to_value(shortcut::gnome::Desktop(&self.desktop).prepare(Some(next))?)
+                .unwrap(),
+        ))
+    }
+    fn apply_shortcut(&self, value: &serde_json::Value, rollback: bool) -> AppResult<()> {
+        if value.is_null() {
+            return Ok(());
+        }
+        let change = serde_json::from_value(value.clone()).unwrap();
+        let desktop = shortcut::gnome::Desktop(&self.desktop);
+        if rollback {
+            desktop.rollback(&change)
+        } else {
+            desktop.apply(&change)
+        }
+    }
+}
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn managed_shortcut_settings_commit_compensates_without_retiring_new_binding() {
+    for fault in [
+        None,
+        Some("publish"),
+        Some("memory_commit"),
+        Some("write_key"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let old = old_settings();
+        let next = next_settings();
+        settings::persist(&path, &old).unwrap();
+        let db = populated(&dir.path().join("memory.sqlite3")).await;
+        let before = state(&db).await;
+        let services = Arc::new(DesktopServices {
+            vault: Fake::with_faults(fault.into_iter().collect()),
+            desktop: Default::default(),
+        });
+        let desktop = shortcut::gnome::Desktop(&services.desktop);
+        desktop
+            .apply(&desktop.prepare(Some(&old.shortcut)).unwrap())
+            .unwrap();
+        let snapshot = desktop.snapshot().unwrap();
+        let outcome = commit(
+            &path,
+            &old,
+            &next,
+            Some(Zeroizing::new("fixture-new".into())),
+            false,
+            Some(db.clone()),
+            services.clone(),
+            &AtomicBool::new(false),
+        )
+        .await;
+        if fault.is_some() {
+            assert!(outcome.is_err());
+            assert_eq!(settings::load(&path).unwrap(), old);
+            assert_eq!(desktop.snapshot().unwrap(), snapshot);
+            assert_eq!(state(&db).await, before);
+        } else {
+            assert!(outcome.is_ok());
+            assert_eq!(desktop.snapshot().unwrap().binding, "<Alt><Shift>t");
+            assert_eq!(settings::load(&path).unwrap(), next);
+        }
+        assert!(!marker(&path).exists());
+    }
+}
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn managed_compensation_failure_requires_explicit_recovery_across_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("settings.json");
+    let old = Settings::default();
+    let next = Settings {
+        shortcut: "Alt+Shift+T".into(),
+        ..old.clone()
+    };
+    settings::persist(&path, &old).unwrap();
+    let services = Arc::new(DesktopServices {
+        vault: Fake::with_faults(vec!["publish", "restore_file"]),
+        desktop: Default::default(),
+    });
+    let desktop = shortcut::gnome::Desktop(&services.desktop);
+    desktop
+        .apply(&desktop.prepare(Some(&old.shortcut)).unwrap())
+        .unwrap();
+    let recovering = AtomicBool::new(false);
+    assert_eq!(
+        commit(
+            &path,
+            &old,
+            &next,
+            None,
+            false,
+            None,
+            services.clone(),
+            &recovering
+        )
+        .await
+        .err()
+        .unwrap()
+        .code,
+        "settings_recovery"
+    );
+    let contents = fs::read_to_string(marker(&path)).unwrap();
+    assert!(contents.contains("desktopShortcut"));
+    assert!(!contents.contains("fixture-old"));
+    assert!(ensure_ready(&path, &AtomicBool::new(false)).is_err());
+    assert!(commit(
+        &path,
+        &old,
+        &next,
+        None,
+        false,
+        None,
+        services.clone(),
+        &AtomicBool::new(false)
+    )
+    .await
+    .is_err());
+    commit(
+        &path,
+        &old,
+        &next,
+        None,
+        true,
+        None,
+        services.clone(),
+        &recovering,
+    )
+    .await
+    .unwrap();
+    assert!(!marker(&path).exists());
+    assert_eq!(desktop.snapshot().unwrap().binding, "<Alt><Shift>t");
+}

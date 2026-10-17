@@ -7,6 +7,7 @@ mod selection;
 mod settings;
 mod settings_commit;
 mod shortcut;
+mod sync;
 mod translation;
 mod window;
 
@@ -57,7 +58,6 @@ pub struct AppState {
     warnings: Mutex<Vec<String>>,
     job: Mutex<Job>,
     busy: AtomicBool,
-    shortcut_available: AtomicBool,
     recovering: std::sync::Arc<AtomicBool>,
 }
 
@@ -114,12 +114,6 @@ async fn save_settings(
     let mut current = state.settings.lock().await;
     let shortcut_changed =
         shortcut::parse(&config.shortcut)? != shortcut::parse(&current.shortcut)?;
-    if shortcut_changed && !state.shortcut_available.load(Ordering::Acquire) {
-        return Err(AppError::new(
-            "shortcut_unavailable",
-            "当前桌面无法使用全局快捷键；请保留原快捷键设置并使用「翻译剪贴板」。",
-        ));
-    }
     let old = current.clone();
     let next = config.clone();
     let path = state.path.clone();
@@ -155,6 +149,7 @@ async fn save_settings(
     let warnings = warnings.clone();
     drop(current);
     analysis::changed(&app);
+    sync::changed(&app);
     Ok(SettingsView {
         settings: config,
         has_api_key: outcome.has_api_key,
@@ -281,6 +276,28 @@ pub fn start_job(
         }
     });
     Ok(())
+}
+
+// A desktop command has no caller webview to display a rejected request.
+// Keep the current in-flight job for busy triggers; surface other gate errors.
+fn dispatch_clipboard(app: &tauri::AppHandle) {
+    if let Err(error) = start_job(app.clone(), None, true, true) {
+        if error.code == "busy" {
+            return;
+        }
+        update_job(app, |job| {
+            *job = Job {
+                revision: job.revision,
+                status: "error".into(),
+                error: Some(error),
+                ..Job::default()
+            };
+        });
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let _ = window::show_translation(&app, None).await;
+        });
+    }
 }
 
 async fn run_job(
@@ -461,6 +478,47 @@ fn show_popup(app: tauri::AppHandle) -> AppResult<()> {
 }
 
 #[tauri::command]
+async fn get_shortcut_status(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> AppResult<shortcut::Status> {
+    let settings = state.settings.lock().await;
+    let desired = settings.shortcut.clone();
+    let path = state.path.clone();
+    tauri::async_runtime::spawn_blocking(move || shortcut::inspect(&app, &path, &desired))
+        .await
+        .map_err(|_| lock_error())
+}
+#[tauri::command]
+async fn manage_shortcut(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    action: String,
+    expected_shortcut: String,
+) -> AppResult<shortcut::Status> {
+    let settings = state.settings.lock().await;
+    if expected_shortcut != settings.shortcut {
+        return Err(shortcut::desktop_error(
+            "已保存快捷键已更新，请刷新后重试。",
+        ));
+    }
+    if app.state::<shortcut::Runtime>().backend != shortcut::Backend::Gnome {
+        return Err(shortcut::desktop_error(
+            "当前会话不支持自动管理；请使用系统手动配置。",
+        ));
+    }
+    let path = state.path.clone();
+    let desired = settings.shortcut.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        shortcut::manage(&path, &desired, &action)?;
+        let _ = app.emit("shortcuts-changed", ());
+        Ok(shortcut::inspect(&app, &path, &desired))
+    })
+    .await
+    .map_err(|_| lock_error())?
+}
+
+#[tauri::command]
 fn quit_app(app: tauri::AppHandle) {
     app.exit(0);
 }
@@ -491,46 +549,112 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, args, _| {
             if args.iter().any(|a| a == "--translate-clipboard") {
-                let _ = start_job(app.clone(), None, true, true);
-            } else { let _ = window::show(app, "main"); }
+                dispatch_clipboard(app);
+            } else {
+                let _ = window::show(app, "main");
+            }
         }))
         .setup(|app| {
             let path = app.path().app_config_dir()?.join("settings.json");
             let mut warnings = vec![];
-            let config = settings::load(&path).unwrap_or_else(|error| { warnings.push(error.message); Settings::default() });
-            let db=memory::Memory::open(app.path().app_data_dir()?.join("memory.sqlite3")).map_err(|e|warnings.push(e.message)).ok();
-            app.manage(analysis::Runtime::new(db));
-            app.manage(AppState {
-                settings: tokio::sync::Mutex::new(config.clone()), recovering: std::sync::Arc::new(AtomicBool::new(settings_commit::marker(&path).exists())), path,
-                warnings: Mutex::new(warnings), job: Mutex::new(Job { status: "idle".into(), ..Job::default() }),
-                busy: AtomicBool::new(false), shortcut_available: AtomicBool::new(false),
+            let config = settings::load(&path).unwrap_or_else(|error| {
+                warnings.push(error.message);
+                Settings::default()
             });
-            let plugin = tauri_plugin_global_shortcut::Builder::new()
-                .with_handler(|app, _shortcut, event| {
-                    if event.state() == tauri_plugin_global_shortcut::ShortcutState::Pressed {
-                        let _ = start_job(app.clone(), None, false, true);
-                    }
-                }).build();
-            let state = app.state::<AppState>();
-            if app.handle().plugin(plugin).is_ok() {
-                state.shortcut_available.store(true, Ordering::Release);
-                if let Err(error) = shortcut::register(app.handle(), &config.shortcut) {
-                    state.warnings.lock().map_err(|_| lock_error())?.push(error.message);
+            let db = memory::Memory::open(app.path().app_data_dir()?.join("memory.sqlite3"))
+                .map_err(|e| warnings.push(e.message))
+                .ok();
+            app.manage(analysis::Runtime::new(db));
+            app.manage(sync::Runtime::default());
+            app.manage(AppState {
+                settings: tokio::sync::Mutex::new(config.clone()),
+                recovering: std::sync::Arc::new(AtomicBool::new(
+                    settings_commit::marker(&path).exists(),
+                )),
+                path,
+                warnings: Mutex::new(warnings),
+                job: Mutex::new(Job {
+                    status: "idle".into(),
+                    ..Job::default()
+                }),
+                busy: AtomicBool::new(false),
+            });
+            let shortcuts = shortcut::Runtime::detect();
+            let native = shortcuts.backend == shortcut::Backend::Native;
+            app.manage(shortcuts);
+            if native {
+                let plugin = tauri_plugin_global_shortcut::Builder::new()
+                    .with_handler(|app, _shortcut, event| {
+                        if event.state() == tauri_plugin_global_shortcut::ShortcutState::Pressed {
+                            let _ = start_job(app.clone(), None, false, true);
+                        }
+                    })
+                    .build();
+                let runtime = app.state::<shortcut::Runtime>();
+                let result = app
+                    .handle()
+                    .plugin(plugin)
+                    .map_err(|_| shortcut::desktop_error("无法初始化原生快捷键。"))
+                    .and_then(|_| {
+                        runtime.native_capable.store(true, Ordering::Release);
+                        shortcut::register(app.handle(), &config.shortcut)
+                    });
+                if let Err(error) = result {
+                    *runtime.error.lock().map_err(|_| lock_error())? = Some(error.message.clone());
+                    app.state::<AppState>()
+                        .warnings
+                        .lock()
+                        .map_err(|_| lock_error())?
+                        .push(error.message);
                 }
-            } else {
-                state.warnings.lock().map_err(|_| lock_error())?.push("当前桌面无法启用全局快捷键，请使用「翻译剪贴板」。Wayland 可配置系统自定义快捷键执行应用 --translate-clipboard。".into());
             }
             if window::tray(app.handle()).is_err() {
-                state.warnings.lock().map_err(|_| lock_error())?.push("系统托盘不可用；可通过再次启动应用重新打开窗口。".into());
+                app.state::<AppState>()
+                    .warnings
+                    .lock()
+                    .map_err(|_| lock_error())?
+                    .push("系统托盘不可用；可通过再次启动应用重新打开窗口。".into());
             }
             if std::env::args().any(|arg| arg == "--translate-clipboard") {
-                let _ = start_job(app.handle().clone(), None, true, true);
+                dispatch_clipboard(app.handle());
+            } else {
+                window::show(app.handle(), "main")?;
             }
             analysis::schedule(app.handle().clone());
+            sync::schedule(app.handle().clone());
             Ok(())
         })
         .on_window_event(window::hide_on_close)
-        .invoke_handler(tauri::generate_handler![get_settings, save_settings, test_connection, get_job, translate_text, translate_clipboard, copy_translation, show_settings, show_popup, quit_app, platform_info, analysis::get_memory,analysis::get_analysis_status,analysis::set_term_feedback,analysis::delete_memory,analysis::select_profile,analysis::analyze_memory])
+        .invoke_handler(tauri::generate_handler![
+            get_settings,
+            save_settings,
+            test_connection,
+            get_job,
+            translate_text,
+            translate_clipboard,
+            copy_translation,
+            show_settings,
+            show_popup,
+            quit_app,
+            platform_info,
+            get_shortcut_status,
+            manage_shortcut,
+            analysis::get_memory,
+            analysis::get_analysis_status,
+            analysis::set_term_feedback,
+            analysis::delete_memory,
+            analysis::select_profile,
+            analysis::analyze_memory,
+            sync::get_sync,
+            sync::test_sync_connection,
+            sync::connect_sync,
+            sync::configure_sync,
+            sync::sync_now,
+            sync::sync_devices,
+            sync::revoke_sync_device,
+            sync::resolve_sync_conflict,
+            sync::clear_sync_memory
+        ])
         .run(tauri::generate_context!())
         .expect("AI Selection Assistant failed to start; check native Tauri prerequisites");
 }

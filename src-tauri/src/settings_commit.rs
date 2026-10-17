@@ -20,6 +20,23 @@ pub trait Services: Send + Sync {
     fn write_key(&self, key: Option<&str>) -> AppResult<()>;
     fn register(&self, shortcut: &str) -> AppResult<()>;
     fn unregister(&self, shortcut: &str) -> AppResult<()>;
+    fn prepare_shortcut(
+        &self,
+        _previous: &str,
+        _next: &str,
+    ) -> AppResult<Option<serde_json::Value>> {
+        Ok(None)
+    }
+    fn prepare_recovered_shortcut(
+        &self,
+        previous: &str,
+        next: &str,
+    ) -> AppResult<Option<serde_json::Value>> {
+        self.prepare_shortcut(previous, next)
+    }
+    fn apply_shortcut(&self, value: &serde_json::Value, rollback: bool) -> AppResult<()> {
+        shortcut::apply_change(value, rollback)
+    }
     // Fault-injection seam; native services never override this.
     fn checkpoint(&self, _point: &str) -> AppResult<()> {
         Ok(())
@@ -37,7 +54,40 @@ impl Services for NativeServices {
     fn register(&self, value: &str) -> AppResult<()> {
         shortcut::register(&self.0, value)
     }
+    fn prepare_shortcut(&self, previous: &str, next: &str) -> AppResult<Option<serde_json::Value>> {
+        use tauri::Manager;
+        let state = self.0.state::<crate::AppState>();
+        shortcut::prepare_change(&self.0, &state.path, previous, next)
+    }
+    fn prepare_recovered_shortcut(
+        &self,
+        previous: &str,
+        next: &str,
+    ) -> AppResult<Option<serde_json::Value>> {
+        #[cfg(target_os = "linux")]
+        {
+            use tauri::Manager;
+            if self.0.state::<shortcut::Runtime>().backend == shortcut::Backend::Gnome {
+                return serde_json::to_value(
+                    shortcut::gnome::Desktop(&shortcut::gnome::System).prepare(Some(next))?,
+                )
+                .map(Some)
+                .map_err(|_| recovery_error());
+            }
+        }
+        self.prepare_shortcut(previous, next)
+    }
     fn unregister(&self, value: &str) -> AppResult<()> {
+        use tauri::Manager;
+        if !self
+            .0
+            .state::<shortcut::Runtime>()
+            .native_capable
+            .load(Ordering::Acquire)
+        {
+            // Native grabs from a previous process/session no longer exist.
+            return Ok(());
+        }
         use tauri_plugin_global_shortcut::GlobalShortcutExt;
         if self
             .0
@@ -61,7 +111,10 @@ pub fn recovery_error() -> AppError {
     )
 }
 pub fn ensure_ready(path: &Path, recovering: &AtomicBool) -> AppResult<()> {
-    if recovering.load(Ordering::Acquire) || marker(path).exists() {
+    if recovering.load(Ordering::Acquire)
+        || marker(path).exists()
+        || shortcut::recovery_path(path).exists()
+    {
         Err(recovery_error())
     } else {
         Ok(())
@@ -141,6 +194,12 @@ pub async fn commit(
     recovering: &AtomicBool,
 ) -> AppResult<Outcome> {
     config.validate()?;
+    if shortcut::recovery_path(path).exists() {
+        return Err(AppError::new(
+            "desktop_shortcut",
+            "请先在快捷键面板恢复桌面操作，再保存设置。",
+        ));
+    }
     if replacement.is_some() && remove_key {
         return Err(AppError::new("api_key", "不能同时设置和删除 API Key。"));
     }
@@ -172,8 +231,8 @@ pub async fn commit(
     if was_recovering && replacement.is_none() && !remove_key {
         return Err(recovery_error());
     }
-    let shortcut_changed =
-        shortcut::parse(&previous.shortcut)? != shortcut::parse(&config.shortcut)?;
+    let shortcut_changed = undo_state["desktopShortcut"].is_object()
+        || shortcut::parse(&previous.shortcut)? != shortcut::parse(&config.shortcut)?;
     let key_changed = replacement.is_some() || remove_key;
     services.checkpoint("stage")?;
     let stage = Arc::new(Staged::prepare(path, config)?);
@@ -183,6 +242,11 @@ pub async fn commit(
         None
     };
     if was_recovering {
+        if let Some(token) = undo_state.get("desktopShortcut") {
+            services
+                .apply_shortcut(token, true)
+                .map_err(|_| recovery_error())?;
+        }
         // Preserve enough non-secret undo information to remove a reserved shortcut
         // whose earlier compensation failed. Across restart it may already be absent.
         {
@@ -195,18 +259,37 @@ pub async fn commit(
         }
     }
     // A durable, non-secret gate also survives a compensation failure and restart.
-    let undo = serde_json::json!({"rememberTerms": prior_remember, "autoAnalyze": prior_auto, "reservedShortcut": if shortcut_changed { Some(&config.shortcut) } else { None }});
-    fs::write(&recovery_path, undo.to_string()).map_err(|_| file_error())?;
+    let desktop_change = if shortcut_changed {
+        if was_recovering && undo_state["desktopShortcut"].is_object() {
+            services.prepare_recovered_shortcut(&previous.shortcut, &config.shortcut)?
+        } else {
+            services.prepare_shortcut(&previous.shortcut, &config.shortcut)?
+        }
+    } else {
+        None
+    };
+    let undo = serde_json::json!({"rememberTerms": prior_remember, "autoAnalyze": prior_auto, "reservedShortcut": if shortcut_changed && desktop_change.is_none() { Some(&config.shortcut) } else { None }, "desktopShortcut":desktop_change});
+    shortcut::atomic_json(&recovery_path, &undo)?;
     let mut reserved = false;
+    let mut desktop_attempted = false;
     let mut key_attempted = false;
     let result = async {
         if shortcut_changed {
-            services.register(&config.shortcut)?;
-            reserved = true;
+            if let Some(token) = &desktop_change {
+                desktop_attempted = true;
+                services.apply_shortcut(token, false)?;
+            } else {
+                services.register(&config.shortcut)?;
+                reserved = true;
+            }
         }
         if key_changed {
             key_attempted = true; // A provider can fail after partially mutating its vault.
             services.write_key(replacement.as_ref().map(|k| k.as_str()))?;
+        }
+        if let Some(db) = &db {
+            db.prepare_sync_preferences(crate::sync::storage::prefs(config))
+                .await?;
         }
         let stage = stage.clone();
         let publisher = services.clone();
@@ -215,9 +298,17 @@ pub async fn commit(
             stage.publish()?;
             publisher.checkpoint("memory_commit")
         };
-        if invalidated {
-            services.checkpoint("memory_invalidate")?;
-            db.as_ref().unwrap().commit_settings(publish).await?;
+        if let Some(db) = &db {
+            if invalidated {
+                services.checkpoint("memory_invalidate")?;
+            }
+            db.commit_synced_settings(
+                publish,
+                crate::sync::storage::prefs(config),
+                invalidated,
+                config.remember_terms,
+            )
+            .await?;
         } else {
             publish()?;
         }
@@ -239,6 +330,20 @@ pub async fn commit(
         if reserved && services.unregister(&config.shortcut).is_err() {
             failed = true;
         }
+        if desktop_attempted
+            && services
+                .apply_shortcut(desktop_change.as_ref().unwrap(), true)
+                .is_err()
+        {
+            failed = true;
+        }
+        if !failed {
+            if let Some(db) = &db {
+                if db.abandon_sync_preferences().await.is_err() {
+                    failed = true;
+                }
+            }
+        }
         if !failed && !was_recovering && fs::remove_file(&recovery_path).is_err() {
             failed = true;
         }
@@ -256,7 +361,7 @@ pub async fn commit(
     } else {
         recovering.store(false, Ordering::Release);
     }
-    if shortcut_changed {
+    if shortcut_changed && desktop_change.is_none() {
         if let Err(e) = services.unregister(&previous.shortcut) {
             warnings.push(e.message);
         }

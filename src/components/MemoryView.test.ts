@@ -65,3 +65,15 @@ it('renders pending, empty and failed keyword searches with a retryable form', a
   expect(view.find('form button[type="submit"]').attributes('disabled')).toBeUndefined()
   view.unmount()
 })
+
+it('requires all-device confirmation and allows cancelling without clearing', async () => {
+  const { useSync, emptySync } = await import('../stores/sync')
+  setActivePinia(createPinia()); native.command.mockReset(); const connected = { ...emptySync(), enabled: true, deviceId: 'device', status: 'idle' }
+  native.command.mockImplementation(async (name: string) => name === 'get_sync' ? connected : name === 'get_memory' ? snapshot() : { running: false, message: '', error: null })
+  const v = mount(MemoryView); await flushPromises(); useSync().view = connected
+  await v.findAll('button').find(b => b.text() === '清空全部记忆')!.trigger('click')
+  expect(v.text()).toContain('旧设备离线变更也会作废'); expect(v.findAll('button').find(b => b.text() === '确认删除')!.attributes('disabled')).toBeDefined()
+  await v.findAll('button').find(b => b.text() === '取消')!.trigger('click'); expect(native.command.mock.calls.some(c => c[0] === 'clear_sync_memory')).toBe(false)
+  await v.findAll('button').find(b => b.text() === '清空全部记忆')!.trigger('click'); await v.find('.inline-message input[type="checkbox"]').setValue(true)
+  await v.findAll('button').find(b => b.text() === '确认删除')!.trigger('click'); await flushPromises(); expect(native.command).toHaveBeenCalledWith('clear_sync_memory', { confirmAllDevices: true }); v.unmount()
+})

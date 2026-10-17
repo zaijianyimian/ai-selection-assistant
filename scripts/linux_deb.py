@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 
 MAX_DEB_BYTES = 30_000_000
-REQUIRED = ['wl-clipboard', 'fonts-noto-cjk', 'libayatana-appindicator3-1']
+REQUIRED = ['libglib2.0-bin', 'wl-clipboard', 'fonts-noto-cjk', 'libayatana-appindicator3-1']
 ROOT = Path(__file__).resolve().parents[1]
 
 def run(*args, cwd=None):
@@ -65,6 +65,8 @@ def verify(package):
         work=Path(directory)
         subprocess.run(['dpkg-deb','-x',str(package),str(work)],check=True)
         binary=work/'usr/bin/ai-selection-assistant'
+        if not binary.is_file() or not os.access(binary, os.X_OK):
+            raise RuntimeError('Missing executable entry: usr/bin/ai-selection-assistant')
         expected=dependencies(binary)+REQUIRED
         actual=[x.strip() for x in run('dpkg-deb','-f',str(package),'Depends').split(',')]
         missing=[entry for entry in expected if not covers(actual,entry)]
@@ -77,6 +79,15 @@ def verify(package):
         for relative in ['usr/share/applications/AI Selection Assistant.desktop','usr/share/icons/hicolor/32x32/apps/ai-selection-assistant.png','usr/share/icons/hicolor/128x128/apps/ai-selection-assistant.png']:
             if not (work/relative).is_file():
                 raise RuntimeError('Missing desktop integration asset: '+relative)
+        launcher=(work/'usr/share/applications/AI Selection Assistant.desktop').read_text()
+        if not re.search(r'^Exec=(?:/usr/bin/)?ai-selection-assistant(?:\s.*)?$',launcher,re.M):
+            raise RuntimeError('Invalid desktop Exec entry')
+        control=work/'control'
+        subprocess.run(['dpkg-deb','-e',str(package),str(control)],check=True)
+        for script_name in ['preinst','postinst','prerm','postrm']:
+            script=control/script_name
+            if script.is_file() and re.search(r'\b(?:gsettings|dconf|pkill|killall)\b',script.read_text()):
+                raise RuntimeError('Maintainer script must not change user shortcuts or kill apps: '+script_name)
         symbols=run('readelf','--wide','--dyn-syms',str(binary))
         versions=sorted(set(re.findall(r'GLIBC_(\d+\.\d+(?:\.\d+)?)',symbols)),key=lambda v:tuple(map(int,v.split('.'))))
         if not versions or not covers(actual,'libc6 (>= '+versions[-1]+')'):

@@ -5,6 +5,7 @@ src-tauri/gen/
 .tools/
 .env
 .env.*
+!.env.example
 *.local
 *.log
 test-results/
@@ -18,3 +19,8 @@ releases/
 *.key
 
 __pycache__/
+
+# Independent synchronization crates
+**/target/
+deploy/.env
+deploy/*.secret

@@ -45,6 +45,7 @@ impl Runtime {
 }
 pub fn changed(app: &tauri::AppHandle) {
     let _ = app.emit("memory-changed", ());
+    crate::sync::changed(app);
 }
 #[tauri::command]
 pub async fn get_memory(
