@@ -32,4 +32,14 @@ describe('local usage state', () => {
     native.command.mockRejectedValue({ message: '磁盘满' }); expect(await store.clear()).toBe(false)
     expect(store.error).toBe('磁盘满'); expect(store.view?.generation).toBe(2)
   })
+  it('restores controls when reset fails during an outstanding statistics read', async () => {
+    const store = useUsage(); let stale!: (v: unknown) => void
+    native.command.mockReturnValueOnce(new Promise(resolve => { stale = resolve }))
+    const read = store.refresh()
+    native.command.mockRejectedValue({ message: '清空失败' })
+    expect(await store.clear()).toBe(false)
+    expect(store.pending).toBe(false); expect(store.error).toBe('清空失败')
+    stale(summary()); await read
+    expect(store.pending).toBe(false); expect(store.view).toBe(null)
+  })
 })

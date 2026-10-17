@@ -5,6 +5,7 @@ import { nextTick } from 'vue'
 import { useAssistant } from '../stores/assistant'
 import TranslationView from './TranslationView.vue'
 import { command } from '../native'
+import { snapshot } from '../test/usage'
 
 vi.mock('../native', () => ({ desktop: true, command: vi.fn() }))
 
@@ -30,6 +31,13 @@ it('labels cache hits and exposes an explicit paid refresh and cache clear', asy
 
 describe('translation result presentation', () => {
   beforeEach(() => setActivePinia(createPinia()))
+  it.each([false, true])('retains failed operation usage without replaying it in the next operation, popup=%s', async popup => {
+    const store = useAssistant(); store.job.status = 'error'; store.job.error = { code: 'truncated', message: '输出被截断' }; store.job.usage = snapshot()
+    const view = mount(TranslationView, { props: { popup } })
+    expect(view.find('.result-error').text()).toContain('输出被截断'); expect(view.find('.usage-line').text()).toContain('合计 130')
+    store.job.usage = null; store.job.error = { code: 'key', message: '凭据不可用' }; await nextTick()
+    expect(view.find('.usage-line').exists()).toBe(false); expect(view.text()).toContain('未发送模型请求'); view.unmount()
+  })
 
   it('renders model content as escaped text and shows contextual terms', () => {
     const store = useAssistant()

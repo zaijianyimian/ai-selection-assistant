@@ -4,12 +4,23 @@ import { createPinia, setActivePinia } from 'pinia'
 import { useAssistant } from '../stores/assistant'
 import { defaultSettings } from '../types'
 import SettingsView from './SettingsView.vue'
+import { snapshot, summary } from '../test/usage'
 
 const native = vi.hoisted(() => ({ command: vi.fn() }))
 vi.mock('../native', () => ({ desktop: true, command: native.command }))
 
 describe('credential input lifecycle', () => {
   beforeEach(() => { setActivePinia(createPinia()); native.command.mockReset() })
+  it('shows a failed connection test usage and clears old usage when a later test is blocked', async () => {
+    useAssistant().ready = true
+    native.command.mockImplementation(async name => name === 'get_usage' ? summary() : name === 'test_connection' ? { message: '', error: { message: '模型输出无效' }, usage: snapshot() } : undefined)
+    const view = mount(SettingsView); await flushPromises()
+    const test = view.findAll('button').find(button => button.text() === '测试连接')!
+    await test.trigger('click'); await flushPromises()
+    expect(view.text()).toContain('模型输出无效'); expect(view.find('.usage-line').text()).toContain('合计 130')
+    native.command.mockRejectedValue({ message: '验证失败' }); await test.trigger('click'); await flushPromises()
+    expect(view.find('.usage-line').exists()).toBe(false); view.unmount()
+  })
 
   it('keeps memory and personalization independent and stops automation when memory is paused', async () => {
     const store = useAssistant(); store.ready = true

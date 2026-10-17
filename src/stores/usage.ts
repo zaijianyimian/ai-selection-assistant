@@ -42,6 +42,7 @@ export const useUsage = defineStore('usage', () => {
   async function clear() {
     if (resetting.value) return false
     ++request
+    loading.value = false
     resetting.value = true; error.value = ''
     try {
       const next = await command<UsageSummary>('clear_usage', { confirm: true })
