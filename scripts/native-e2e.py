@@ -23,6 +23,8 @@ class Provider(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         body=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
         requests.append(body)
+        if body['messages'][1]['content']=='cache-error-fixture':
+            self.send_response(500);self.end_headers();self.wfile.write(b'{"error":{"message":"fixture server failure"}}');return
         if body['messages'][0]['content'].startswith('Analyze technical'):
             content={'topics':[{'domain':'Agent','evidenceIds':[1]}]}
         else:
@@ -106,6 +108,34 @@ with tempfile.TemporaryDirectory(prefix='asa-native-e2e-') as directory:
             current=invoke('get_settings')['settings']
             invoke('save_settings',{'config':current,'apiKey':'fixture-provider-key','removeApiKey':False})
             check('isolated credential save/read',invoke('get_settings')['hasApiKey'])
+            invoke('translate_text',{'text':'An Agent completes a task.'})
+            wait(lambda:invoke('get_job')['status']=='success')
+            count=len(requests)
+            invoke('translate_text',{'text':'An Agent completes a task.'})
+            wait(lambda:invoke('get_job')['status']=='success')
+            check('repeat translation uses session cache without HTTP',invoke('get_job')['cacheHit'] and len(requests)==count)
+            check('cache hit does not inflate term observations',invoke('get_memory',{'query':'','offset':0})['terms'][0]['count']==1)
+            wait(lambda:'来自缓存' in body())
+            check('native view displays cache provenance',True)
+            config_path.with_suffix('.recovery').write_text('settings recovery required\n')
+            blocked=invoke('translate_text',{'text':'An Agent completes a task.'},True)
+            check('cached result cannot bypass settings recovery gate','error' in blocked and len(requests)==count)
+            config_path.with_suffix('.recovery').unlink()
+            invoke('translate_text',{'text':'An Agent completes a task.','bypassCache':True})
+            wait(lambda:invoke('get_job')['status']=='success')
+            check('explicit refresh bypasses and replaces cache',not invoke('get_job')['cacheHit'] and len(requests)==count+1)
+            invoke('clear_translation_cache')
+            invoke('translate_text',{'text':'An Agent completes a task.'})
+            wait(lambda:invoke('get_job')['status']=='success')
+            check('clearing cache requires a fresh provider request',not invoke('get_job')['cacheHit'] and len(requests)==count+2)
+            count=len(requests)
+            for _ in range(2):
+                invoke('translate_text',{'text':'cache-error-fixture'})
+                wait(lambda:invoke('get_job')['status']=='error')
+            check('failed translations are never cached',len(requests)==count+2)
+            count=len(requests)
+            for _ in range(2):invoke('test_connection',{'config':current,'apiKey':'fixture-provider-key'})
+            check('connection tests always contact provider',len(requests)==count+2)
             invoke('translate_text',{'text':'An Agent completes a task.'})
             wait(lambda:invoke('get_job')['status']=='success')
             invoke('analyze_memory')
@@ -303,6 +333,7 @@ with tempfile.TemporaryDirectory(prefix='asa-native-e2e-') as directory:
             wait(lambda:invoke('get_job')['status']=='success')
             check('plugin initialization does not imply shortcut ready',invoke('get_shortcut_status')['capable'] and invoke('get_shortcut_status')['status']=='unavailable')
             check('cold clipboard command captures before result',invoke('get_job')['original']=='An Agent from clipboard.' and invoke('get_job')['source']=='clipboard')
+            check('restarting process starts with an empty translation cache',not invoke('get_job')['cacheHit'])
             check('cold clipboard launch keeps main hidden',not invoke('plugin:window|is_visible',{'label':'main'}))
             check('cold clipboard launch opens result popup',invoke('plugin:window|is_visible',{'label':'translation'}))
             # WebKit's screenshot endpoint waits forever for a hidden main webview.

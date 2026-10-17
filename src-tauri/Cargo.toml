@@ -1,6 +1,6 @@
 [package]
 name = "ai-selection-assistant"
-version = "0.3.2"
+version = "0.3.3"
 description = "Local-first AI selection translation assistant"
 edition = "2021"
 rust-version = "1.90"

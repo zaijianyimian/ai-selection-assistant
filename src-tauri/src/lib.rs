@@ -1,4 +1,5 @@
 mod analysis;
+mod cache;
 mod error;
 mod llm;
 mod memory;
@@ -50,6 +51,7 @@ pub struct Job {
     pub warning: Option<String>,
     pub result: Option<translation::Translation>,
     pub error: Option<AppError>,
+    pub cache_hit: bool,
 }
 
 pub struct AppState {
@@ -59,6 +61,7 @@ pub struct AppState {
     job: Mutex<Job>,
     busy: AtomicBool,
     recovering: std::sync::Arc<AtomicBool>,
+    cache: Mutex<cache::Cache>,
 }
 
 fn lock_error() -> AppError {
@@ -135,6 +138,12 @@ async fn save_settings(
     .await
     .map_err(|_| lock_error())??;
     *current = config.clone();
+    // Also discard results from requests that started before this settings save.
+    state
+        .cache
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
     if outcome.invalidated {
         app.state::<analysis::Runtime>()
             .generation
@@ -216,6 +225,16 @@ pub fn start_job(
     clipboard_only: bool,
     popup: bool,
 ) -> AppResult<()> {
+    start_job_with_cache(app, input, clipboard_only, popup, false)
+}
+
+fn start_job_with_cache(
+    app: tauri::AppHandle,
+    input: Option<String>,
+    clipboard_only: bool,
+    popup: bool,
+    bypass_cache: bool,
+) -> AppResult<()> {
     if let Some(text) = &input {
         translation::validate_input(text)?;
     }
@@ -257,12 +276,14 @@ pub fn start_job(
             popup,
             memory_generation,
             anchor,
+            bypass_cache,
         )
         .await;
         match outcome {
-            Ok(result) => update_job(&app, |job| {
+            Ok((result, cache_hit)) => update_job(&app, |job| {
                 job.status = "success".into();
                 job.result = Some(result);
+                job.cache_hit = cache_hit;
             }),
             Err(error) => {
                 update_job(&app, |job| {
@@ -307,13 +328,14 @@ async fn run_job(
     popup: bool,
     memory_generation: u64,
     anchor: Option<tauri::PhysicalPosition<f64>>,
-) -> AppResult<translation::Translation> {
+    bypass_cache: bool,
+) -> AppResult<(translation::Translation, bool)> {
     let state = app.state::<AppState>();
     let settings = state.settings.lock().await;
     settings_commit::ensure_ready(&state.path, &state.recovering)?;
     let config = settings.clone();
     let db = app.state::<analysis::Runtime>().db.clone();
-    let epoch = if config.remember_terms {
+    let epoch = if config.remember_terms || config.personalize_explanations {
         match &db {
             Some(db) => db.epoch().await.ok(),
             None => None,
@@ -354,15 +376,40 @@ async fn run_job(
     settings_commit::ensure_ready(&state.path, &state.recovering)?;
     let key = vault_key().await?.unwrap_or_default();
     settings_commit::ensure_ready(&state.path, &state.recovering)?;
-    let context = if config.personalize_explanations {
+    let (context, context_available) = if config.personalize_explanations {
         match &db {
-            Some(db) => db.context(selection.text.clone()).await.unwrap_or_default(),
-            None => String::new(),
+            Some(db) => match db.context(selection.text.clone()).await {
+                Ok(context) => (context, true),
+                Err(_) => (String::new(), false),
+            },
+            None => (String::new(), false),
         }
     } else {
-        String::new()
+        (String::new(), true)
     };
+    let cache_key = state.cache.lock().map_err(|_| lock_error())?.key(
+        &config,
+        &key,
+        &selection.text,
+        &context,
+        epoch.map(|epoch| (memory_generation, epoch)),
+    )?;
+    // When memory is unavailable, avoid cached memory IDs or incomplete context.
+    let cache_allowed = context_available
+        && (!(config.remember_terms || config.personalize_explanations) || epoch.is_some());
+    if cache_allowed && !bypass_cache {
+        let cached = state
+            .cache
+            .lock()
+            .map_err(|_| lock_error())?
+            .get(&cache_key, std::time::Instant::now());
+        if let Some(result) = cached {
+            // A cache hit is a reuse, not a new term observation or analysis event.
+            return Ok((result, true));
+        }
+    }
     let mut result = llm::translate_with_context(&config, &key, &selection.text, &context).await?;
+    let mut cacheable = cache_allowed;
     if config.remember_terms {
         let indices: Vec<_> = result
             .terms
@@ -424,9 +471,13 @@ async fn run_job(
                     None
                 }
             }
-            Err(e) => Some(e.message),
+            Err(e) => {
+                cacheable = false;
+                Some(e.message)
+            }
         };
         if let Some(warning) = warning {
+            cacheable = false;
             update_job(app, |job| {
                 job.warning = Some(match job.warning.take() {
                     Some(old) => format!("{old} {warning}"),
@@ -439,12 +490,29 @@ async fn run_job(
     if !config.explain_terms {
         result.terms.clear();
     }
-    Ok(result)
+    if cacheable {
+        state.cache.lock().map_err(|_| lock_error())?.insert(
+            cache_key,
+            result.clone(),
+            std::time::Instant::now(),
+        );
+    }
+    Ok((result, false))
 }
 
 #[tauri::command]
-fn translate_text(app: tauri::AppHandle, text: String) -> AppResult<()> {
-    start_job(app, Some(text), false, false)
+fn translate_text(
+    app: tauri::AppHandle,
+    text: String,
+    bypass_cache: Option<bool>,
+) -> AppResult<()> {
+    start_job_with_cache(app, Some(text), false, false, bypass_cache.unwrap_or(false))
+}
+
+#[tauri::command]
+fn clear_translation_cache(state: State<'_, AppState>) -> AppResult<()> {
+    state.cache.lock().map_err(|_| lock_error())?.clear();
+    Ok(())
 }
 
 #[tauri::command]
@@ -578,6 +646,7 @@ pub fn run() {
                     ..Job::default()
                 }),
                 busy: AtomicBool::new(false),
+                cache: Mutex::new(cache::Cache::default()),
             });
             let shortcuts = shortcut::Runtime::detect();
             let native = shortcuts.backend == shortcut::Backend::Native;
@@ -631,6 +700,7 @@ pub fn run() {
             test_connection,
             get_job,
             translate_text,
+            clear_translation_cache,
             translate_clipboard,
             copy_translation,
             show_settings,

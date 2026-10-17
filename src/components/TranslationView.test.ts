@@ -4,8 +4,29 @@ import { createPinia, setActivePinia } from 'pinia'
 import { nextTick } from 'vue'
 import { useAssistant } from '../stores/assistant'
 import TranslationView from './TranslationView.vue'
+import { command } from '../native'
 
 vi.mock('../native', () => ({ desktop: true, command: vi.fn() }))
+
+it('labels cache hits and exposes an explicit paid refresh and cache clear', async () => {
+  setActivePinia(createPinia())
+  const store = useAssistant(); store.ready = true; store.input = 'Agent'
+  store.job.result = { translation: '智能体', sourceLanguage: 'English', terms: [], compatibilityFallback: false }
+  store.job.cacheHit = true
+  const translate = vi.spyOn(store, 'translate').mockResolvedValue()
+  const view = mount(TranslationView, { props: { popup: true } })
+  expect(view.find('.result-meta').text()).toContain('来自缓存 · 未请求模型')
+  await view.findAll('button').find(b => b.text() === '重新请求模型')!.trigger('click')
+  expect(translate).toHaveBeenCalledWith(false, true)
+  vi.mocked(command).mockResolvedValue(undefined)
+  await view.findAll('button').find(b => b.text() === '清空缓存')!.trigger('click')
+  await nextTick()
+  expect(command).toHaveBeenCalledWith('clear_translation_cache')
+  expect(view.text()).toContain('缓存已清空')
+  store.job.status = 'translating'; await nextTick()
+  expect(view.findAll('button').find(b => b.text() === '清空缓存')!.attributes('disabled')).toBeDefined()
+  view.unmount()
+})
 
 describe('translation result presentation', () => {
   beforeEach(() => setActivePinia(createPinia()))

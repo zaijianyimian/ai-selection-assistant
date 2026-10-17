@@ -50,12 +50,12 @@ export const useAssistant = defineStore('assistant', () => {
     finally { ready.value = true }
   }
 
-  async function translate(clipboard = false) {
+  async function translate(clipboard = false, bypassCache = false) {
     if (busy.value) return
     error.value = ''
     pending.value = true
     try {
-      await command(clipboard ? 'translate_clipboard' : 'translate_text', clipboard ? undefined : { text: input.value })
+      await command(clipboard ? 'translate_clipboard' : 'translate_text', clipboard ? undefined : { text: input.value, ...(bypassCache ? { bypassCache: true } : {}) })
       // Reconcile even if the webview was temporarily suspended during event delivery.
       acceptJob(await command<Job>('get_job'))
     } catch (e) { error.value = errorMessage(e) }

@@ -15,6 +15,17 @@ const idle = (): Job => ({ requestOptions: null, revision: 0, status: 'idle', or
 describe('native job synchronization', () => {
   beforeEach(() => { setActivePinia(createPinia()); native.command.mockReset(); native.handlers.clear() })
 
+  it('uses the cache by default and bypasses only on explicit refresh', async () => {
+    const store = useAssistant(); store.input = 'Agent'
+    native.command.mockImplementation(async name => name === 'get_job' ? idle() : undefined)
+    await store.translate()
+    expect(native.command).toHaveBeenCalledWith('translate_text', { text: 'Agent' })
+    await store.translate(false, true)
+    expect(native.command).toHaveBeenCalledWith('translate_text', { text: 'Agent', bypassCache: true })
+    await store.translate(true)
+    expect(native.command).toHaveBeenCalledWith('translate_clipboard', undefined)
+  })
+
   it('keeps a newer result when an older snapshot arrives after an event', async () => {
     const store = useAssistant()
     const completed: Job = { ...idle(), requestOptions: { targetLanguage: 'English', explainTerms: false }, revision: 5, status: 'success', original: 'source', result: { translation: '译文', sourceLanguage: 'English', terms: [], compatibilityFallback: false } }

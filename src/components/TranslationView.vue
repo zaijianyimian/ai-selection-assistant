@@ -14,6 +14,7 @@ onMounted(() => { void shortcuts.refresh() })
 const wayland = computed(() => store.platform.startsWith('Wayland') || ['gnome', 'manual'].includes(shortcuts.state?.backend ?? ''))
 const copied = ref(false)
 const copyError = ref('')
+const cacheMessage = ref('')
 const targetLanguage = computed(() => store.job.requestOptions?.targetLanguage ?? (store.job.result ? '目标语言未知' : store.settings.targetLanguage))
 const explainTerms = computed(() => store.job.requestOptions?.explainTerms ?? (store.job.result ? !!store.job.result.terms.length : store.settings.explainTerms))
 const count = computed(() => [...store.input].length)
@@ -25,6 +26,11 @@ async function copy() {
     copied.value = true
     setTimeout(() => { copied.value = false }, 1800)
   } catch (e) { copyError.value = errorMessage(e) }
+}
+async function clearCache() {
+  cacheMessage.value = ''
+  try { await command('clear_translation_cache'); cacheMessage.value = '缓存已清空。' }
+  catch (e) { cacheMessage.value = errorMessage(e) }
 }
 </script>
 
@@ -46,12 +52,14 @@ async function copy() {
       <section class="text-panel output-panel" aria-live="polite" aria-atomic="false">
         <div class="panel-heading"><span><span class="mini-label accent">02</span>译文</span><div class="translation-tools"><span class="language-tag">{{ targetLanguage }}</span><button class="icon-button" :aria-label="copied ? '已复制' : '复制译文'" :title="copied ? '已复制' : '复制译文'" :disabled="!store.job.result || store.busy" @click="copy"><Icon :name="copied ? 'check' : 'copy'" :size="16" /></button></div></div>
         <div v-if="store.busy" class="result-loading" role="status"><div class="loading-symbol"><Icon name="spark" :size="26" /></div><strong>{{ store.job.status === 'capturing' ? '正在读取文字…' : '正在理解这段文字…' }}</strong><p>翻译与术语解释将在同一次回复中返回</p><div class="skeleton-lines"><i></i><i></i><i></i></div></div>
-        <template v-else-if="store.job.result"><div class="translated-text">{{ store.job.result.translation }}</div><div class="result-meta"><span class="status-dot"></span>翻译完成<span v-if="store.job.source"> · {{ sourceLabels[store.job.source] || store.job.source }}</span></div></template>
+        <template v-else-if="store.job.result"><div class="translated-text">{{ store.job.result.translation }}</div><div class="result-meta"><span class="status-dot"></span>{{ store.job.cacheHit ? '来自缓存 · 未请求模型' : '翻译完成' }}<span v-if="store.job.source"> · {{ sourceLabels[store.job.source] || store.job.source }}</span></div></template>
         <div v-else-if="store.job.error" class="result-error" role="alert"><Icon name="info" :size="28" /><strong>这次翻译没有完成</strong><p>{{ store.job.error.message }}</p><button class="button secondary" :disabled="!store.input.trim()" @click="store.translate()">重试输入文字</button></div>
         <div v-else class="empty-result"><div class="empty-icon"><Icon name="translate" :size="32" /></div><strong>让理解，自然发生</strong><p>译文会出现在这里<br />专业术语也会得到清晰的解释</p><span class="empty-line"></span><span class="muted text-small">使用你自己的模型，连接更广阔的知识</span></div>
         <div v-if="copyError" class="inline-message error" role="alert">{{ copyError }}</div>
       </section>
     </div>
+
+    <div class="translation-cache-tools"><span>本次运行内自动缓存 · 30 分钟有效 · 最多 100 条</span><button v-if="store.job.result" class="text-button" :disabled="store.busy || !store.ready || !store.input.trim() || count > 16000" title="跳过缓存，重新请求模型，可能产生 API 费用" @click="store.translate(false, true)">重新请求模型</button><button class="text-button" :disabled="store.busy || !store.ready" @click="clearCache">清空缓存</button><span v-if="cacheMessage" role="status">{{ cacheMessage }}</span></div>
 
     <div v-if="store.job.warning" class="inline-message warning"><Icon name="info" :size="16" />{{ store.job.warning }}</div>
     <div v-if="store.job.result?.compatibilityFallback" class="inline-message warning">已按服务返回的兼容要求调整输出格式或 Temperature 参数，翻译成功。可在设置中选择「JSON 模式」或「提示词 JSON」减少后续格式探测。</div>

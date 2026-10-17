@@ -20,6 +20,7 @@ export interface Term { original: string; translation: string; domain: string; e
 export interface Translation { translation: string; sourceLanguage: string; terms: Term[]; compatibilityFallback: boolean }
 export interface RequestOptions { targetLanguage: Settings['targetLanguage']; explainTerms: boolean }
 export interface Job {
+  cacheHit?: boolean
   requestOptions: RequestOptions | null
   revision: number
   status: 'idle' | 'capturing' | 'translating' | 'success' | 'error'
